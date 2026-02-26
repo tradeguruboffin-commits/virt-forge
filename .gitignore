@@ -1,0 +1,114 @@
+# =====================================
+# Disk Images & VM related large/binary files
+# =====================================
+*.qcow2
+*.qcow2.*
+*.img
+*.raw
+*.vmdk
+*.vdi
+*.vhdx
+*.iso
+*.ova
+*.ovf
+*.nvram
+*.vmx
+*.vmsd
+*.vswp
+*.snapshot*
+*.lock
+
+# =====================================
+# Runtime data, state, configs that change
+# =====================================
+vms.json
+vms.yaml
+*.json.bak
+*.json.tmp
+*.yaml.bak
+storage/
+qemu_portable/
+pids/
+logs/
+*.pid
+*.pid.lock
+*.seed
+*.lock
+*.state
+*.status
+
+# =====================================
+# Logs & temporary files
+# =====================================
+*.log
+logs/
+log/
+debug.log
+error.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*\~
+
+# =====================================
+# Python specific
+# =====================================
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+*.so
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+.env/
+
+# =====================================
+# IDE / Editor / OS junk
+# =====================================
+.idea/
+.vscode/
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# =====================================
+# Build / Packaging / Dist artifacts
+# =====================================
+build/
+dist/
+*.egg-info/
+*.egg
+eggs/
+.eggs/
+*.deb
+*.rpm
+*.AppImage
+*.flatpak
+*.tar.gz
+*.zip
+*.exe
+*.msi
+release-*/
+build-*/
+
+# =====================================
+# Misc project-specific (any)
+# =====================================
+debian/
+*.user
+*.pro.user
+*.qmake.stash
+.cache/
