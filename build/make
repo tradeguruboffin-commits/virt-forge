@@ -2,7 +2,7 @@
 # =============================================================
 #  virt-forge — build script
 #  Usage: ./build/make [target]
-#  Targets: all (default), qemu, qemu-ctl, qemu-disk, clean
+#  Targets: all (default), qemu-run, qemu-ctl, qemu-disk, clean
 # =============================================================
 set -eu
 
@@ -27,7 +27,7 @@ build() {
 
 clean() {
     printf '🧹 Cleaning bin/...\n'
-    rm -f "$BIN/qemu" "$BIN/qemu-ctl" "$BIN/qemu-disk"
+    rm -f "$BIN/qemu-run" "$BIN/qemu-ctl" "$BIN/qemu-disk"
     printf '✅ Done\n'
 }
 
@@ -42,13 +42,13 @@ TARGET="${1:-all}"
 
 case "$TARGET" in
     all)
-        build qemu      main.go
+        build qemu-run      main.go
         build qemu-ctl  qemu-ctl.go
         build qemu-disk qemu-disk.go
         printf '🎉 All binaries built in bin/\n'
         ;;
     qemu)
-        build qemu main.go
+        build qemu-run main.go
         ;;
     qemu-ctl)
         build qemu-ctl qemu-ctl.go
