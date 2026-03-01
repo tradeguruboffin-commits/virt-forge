@@ -1,0 +1,66 @@
+#!/bin/sh
+# =============================================================
+#  virt-forge — build script
+#  Usage: ./build/make [target]
+#  Targets: all (default), qemu, qemu-ctl, qemu-disk, clean
+# =============================================================
+set -eu
+
+# ── Paths ─────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(dirname "$SCRIPT_DIR")"
+ASSETS="$ROOT/assets"
+BIN="$ROOT/bin"
+
+# ── Helpers ───────────────────────────────────────────────────
+build() {
+    NAME="$1"
+    SOURCE="./$2"
+    OUTPUT="$BIN/$NAME"
+
+    printf '🔨 Building %s...\n' "$NAME"
+    # go build must run from assets/ so go.mod is discoverable
+    ( cd "$ASSETS" && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$OUTPUT" "$SOURCE" )
+    chmod +x "$OUTPUT"
+    printf '✅ %s → bin/%s\n\n' "$NAME" "$NAME"
+}
+
+clean() {
+    printf '🧹 Cleaning bin/...\n'
+    rm -f "$BIN/qemu" "$BIN/qemu-ctl" "$BIN/qemu-disk"
+    printf '✅ Done\n'
+}
+
+# ── Sync dependencies ─────────────────────────────────────────
+( cd "$ASSETS" && go mod tidy )
+
+# ── Ensure bin/ exists ────────────────────────────────────────
+mkdir -p "$BIN"
+
+# ── Dispatch ─────────────────────────────────────────────────
+TARGET="${1:-all}"
+
+case "$TARGET" in
+    all)
+        build qemu      main.go
+        build qemu-ctl  qemu-ctl.go
+        build qemu-disk qemu-disk.go
+        printf '🎉 All binaries built in bin/\n'
+        ;;
+    qemu)
+        build qemu main.go
+        ;;
+    qemu-ctl)
+        build qemu-ctl qemu-ctl.go
+        ;;
+    qemu-disk)
+        build qemu-disk qemu-disk.go
+        ;;
+    clean)
+        clean
+        ;;
+    *)
+        printf 'Usage: %s [all|qemu|qemu-ctl|qemu-disk|clean]\n' "$0"
+        exit 1
+        ;;
+esac

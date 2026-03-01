@@ -27,7 +27,8 @@ vms.yaml
 *.json.tmp
 *.yaml.bak
 storage/
-qemu_portable/
+engine/
+bin/
 pids/
 logs/
 *.pid
@@ -87,7 +88,6 @@ Desktop.ini
 # =====================================
 # Build / Packaging / Dist artifacts
 # =====================================
-build/
 dist/
 *.egg-info/
 *.egg
