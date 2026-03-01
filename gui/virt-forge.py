@@ -21,8 +21,11 @@ from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QProcess
 from PyQt6.QtGui import QFont, QColor, QPalette, QIcon
 
 # ── Paths ─────────────────────────────────────────────────────
-ROOT    = Path(__file__).resolve().parent.parent
-BIN_DIR = ROOT / "bin"
+# VIRT_FORGE_ROOT env var overrides auto-detection — useful when
+# the script is run from a different directory or packaged.
+_env_root = os.environ.get("VIRT_FORGE_ROOT")
+ROOT    = Path(_env_root).resolve() if _env_root else Path(__file__).resolve().parent.parent
+BIN_DIR = Path(os.environ.get("VIRT_FORGE_BIN", str(ROOT / "bin"))).resolve()
 
 # ── Terminal emulator preference list ────────────────────────
 TERMINALS = ["xterm", "konsole", "gnome-terminal", "xfce4-terminal", "lxterminal"]
@@ -40,13 +43,18 @@ def find_terminal():
 # =============================================================
 
 class Worker(QThread):
-    """Run a subprocess in a background thread; emit stdout when done."""
+    """Run a subprocess in a background thread; emit stdout when done.
+
+    timeout: seconds before giving up. Pass None for disk operations
+             (convert/resize can take minutes on large images).
+    """
     finished = pyqtSignal(str, str)   # stdout, stderr
 
-    def __init__(self, cmd, stdin_data=None, parent=None):
+    def __init__(self, cmd, stdin_data=None, timeout=30, parent=None):
         super().__init__(parent)
         self.cmd        = cmd
         self.stdin_data = stdin_data
+        self.timeout    = timeout   # None = no limit
 
     def run(self):
         try:
@@ -55,11 +63,11 @@ class Worker(QThread):
                 input=self.stdin_data,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=self.timeout,
             )
             self.finished.emit(r.stdout, r.stderr)
         except subprocess.TimeoutExpired:
-            self.finished.emit("", "⏱ Timeout: command took too long")
+            self.finished.emit("", f"⏱ Timeout after {self.timeout}s — try again")
         except Exception as e:
             self.finished.emit("", f"❌ Error: {e}")
 
@@ -537,7 +545,9 @@ class DiskTab(QWidget):
             stdin = f"{src}\n{dst}\n{fmt}\ny\n"
             self.console.clear_and_print(f"Converting {src} → {dst} ({fmt})…")
 
-        w = Worker([str(disk), mode], stdin_data=stdin)
+        # Disk operations (create/convert/resize) can take minutes
+        # on large images — no timeout.
+        w = Worker([str(disk), mode], stdin_data=stdin, timeout=None)
         self._workers.append(w)
         w.finished.connect(self._on_done)
         w.finished.connect(lambda: self._workers.remove(w) if w in self._workers else None)
@@ -571,6 +581,21 @@ class VirtForge(QMainWindow):
 
         # Status bar shows bin/ path
         self.statusBar().showMessage(f"bin: {BIN_DIR}")
+
+        # Keep references to all child tabs for cleanup
+        self._tabs = [
+            tabs.widget(i) for i in range(tabs.count())
+        ]
+
+    def closeEvent(self, event):
+        """Terminate any running worker threads before exit."""
+        for tab in self._tabs:
+            workers = getattr(tab, "_workers", [])
+            for w in list(workers):
+                if w.isRunning():
+                    w.terminate()
+                    w.wait(2000)   # wait up to 2s; OS cleans up the rest
+        event.accept()
 
     def _theme(self):
         return """
