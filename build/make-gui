@@ -1,0 +1,69 @@
+#!/bin/sh
+# =============================================================
+#  virt-forge — GUI build script (PyInstaller one-dir)
+#  Called by: ./build/make gui
+#  Output:    bin/virt-forge        ← executable
+#             bin/_internal/        ← PyQt6 + libs (must stay beside binary)
+# =============================================================
+set -eu
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(dirname "$SCRIPT_DIR")"
+BIN="$ROOT/bin"
+GUI_SRC="$ROOT/gui/virt-forge.py"
+
+# ── Preflight checks ──────────────────────────────────────────
+if ! python3 -m PyInstaller --version > /dev/null 2>&1; then
+    printf '❌ PyInstaller not found.\n'
+    printf '   Install with: pip install pyinstaller\n'
+    exit 1
+fi
+
+if ! python3 -c "import PyQt6" > /dev/null 2>&1; then
+    printf '❌ PyQt6 not found.\n'
+    printf '   Install with: pip install PyQt6\n'
+    exit 1
+fi
+
+if [ ! -f "$GUI_SRC" ]; then
+    printf '❌ Source not found: %s\n' "$GUI_SRC"
+    exit 1
+fi
+
+# ── Build ─────────────────────────────────────────────────────
+printf '🔨 Building GUI (PyInstaller one-dir)...\n'
+
+WORK_DIR="$SCRIPT_DIR/gui-work"
+DIST_DIR="$SCRIPT_DIR/gui-dist"
+
+python3 -m PyInstaller \
+    --onedir \
+    --name "virt-forge" \
+    --distpath "$DIST_DIR" \
+    --workpath "$WORK_DIR" \
+    --specpath "$WORK_DIR" \
+    --noconfirm \
+    --clean \
+    --windowed \
+    "$GUI_SRC"
+
+# ── Move output to bin/ ───────────────────────────────────────
+# PyInstaller one-dir layout:
+#   gui-dist/virt-forge/virt-forge   ← main executable
+#   gui-dist/virt-forge/_internal/   ← required libs (must travel with binary)
+#
+# We flatten both into bin/ so the final layout is:
+#   bin/virt-forge      ← executable
+#   bin/_internal/      ← libs beside the binary
+#
+rm -f  "$BIN/virt-forge"
+rm -rf "$BIN/_internal"
+mv "$DIST_DIR/virt-forge/virt-forge"  "$BIN/virt-forge"
+mv "$DIST_DIR/virt-forge/_internal"   "$BIN/_internal"
+
+# ── Cleanup PyInstaller temp dirs ────────────────────────────
+rm -rf "$WORK_DIR" "$DIST_DIR"
+
+printf '✅ GUI built:\n'
+printf '     bin/virt-forge   ← run this\n'
+printf '     bin/_internal/   ← keep beside the binary\n\n'

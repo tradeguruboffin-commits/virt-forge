@@ -1,144 +1,286 @@
-# virt-forge — QEMU VM Manager
+# Virt-Forge
 
-busybox + QEMU দিয়ে তৈরি portable VM management system।
-কোনো বাইরের dependency নেই — সব `./bin/` এর টুল থেকে চলে।
+A QEMU virtual machine manager — interactive TUI launcher, control utility, disk manager, and PyQt6 GUI, all written in Go and Python.
 
 ---
 
-## প্রজেক্ট স্ট্রাকচার
+## Project Structure
 
 ```
-/opt/virt-forge/
-├── bin/
-│   ├── qemu             ← মেইন wrapper (এটাই ব্যবহার করুন)
-│   ├── busybox          ← সব unix টুলের base
-│   └── ...symlinks
-├── engine/
-│   ├── bin/
-│   │   ├── qemu-system-x86_64
-│   │   ├── qemu-system-aarch64
-│   │   ├── qemu-system-riscv64
-│   │   └── qemu-img
-│   ├── lib/             ← সব shared libraries
-│   ├── modules/         ← QEMU modules
-│   └── qemu/            ← firmware, OVMF, keymaps
-├── disks/               ← qcow2 disk images
-├── isos/                ← ISO ফাইল রাখুন এখানে
-├── vms/
-│   └── <n>/
-│       ├── config       ← ম্যানুয়াল config (এডিট করুন)
-│       └── config.auto  ← অটো জেনারেট (সরাসরি এডিট করবেন না)
-├── runtime/
-│   ├── logs/            ← VM লগ
-│   └── pids/            ← running VM pid ফাইল
-└── libexec/             ← internal scripts (সরাসরি কল করবেন না)
-    ├── lib.sh
-    ├── cmd-create.sh
-    ├── cmd-start.sh
-    ├── cmd-stop.sh
-    ├── cmd-list.sh
-    ├── cmd-info.sh
-    ├── cmd-attach-iso.sh
-    ├── cmd-console.sh
-    └── cmd-delete.sh
+virt-forge/
+├── assets/                  # Go source files
+│   ├── go.mod
+│   ├── go.sum
+│   ├── main.go              # qemu — main VM launcher (interactive TUI)
+│   ├── qemu-ctl.go          # qemu-ctl — VM status / stop / list
+│   └── qemu-disk.go         # qemu-disk — disk image manager
+│
+├── bin/                     # Build output (binaries + disk images)
+│   ├── qemu                 # VM launcher binary
+│   ├── qemu-ctl             # Control binary
+│   ├── qemu-disk            # Disk manager binary
+│   ├── virt-forge           # GUI binary (PyInstaller one-dir)
+│   ├── _internal/           # GUI runtime libs — must stay beside the binary
+│   ├── alpine.qcow2         # (example) disk image
+│   └── debian12.qcow2       # (example) disk image
+│
+├── build/
+│   ├── make                 # Main build script (Go + GUI)
+│   └── make-gui             # GUI-only build script (PyInstaller)
+│
+├── gui/
+│   └── virt-forge.py        # PyQt6 GUI source
+│
+├── installer/
+│   ├── install-deps.sh      # QEMU system dependency installer
+│   ├── install-desktop.sh   # Desktop menu entry installer
+│   └── virt-forge.png       # App icon (512×512)
+│
+└── README.md
 ```
 
 ---
 
-## দ্রুত শুরু
+## Step 1 — Install QEMU Dependencies
 
-```bash
-# PATH এ যোগ করুন
-export PATH="/opt/virt-forge/bin:$PATH"
+The following system binaries are required:
+`qemu-system-x86_64`, `qemu-system-aarch64`, `qemu-utils`
 
-# ISO রাখুন
-cp debian-12.iso /opt/virt-forge/isos/
+```sh
+sudo ./installer/install-deps.sh
+```
 
-# VM তৈরি করুন
-qemu create myvm --arch x86_64 --disk 20G --ram 2G --cpu 2
+**Supported distributions:**
 
-# ISO attach করুন
-qemu attach-iso myvm /opt/virt-forge/isos/debian-12.iso
+| Package Manager | Distributions |
+|---|---|
+| `apt` | Debian, Ubuntu, Mint, Pop!\_OS, Kali, Raspbian |
+| `dnf` | Fedora, RHEL 8+, AlmaLinux, Rocky |
+| `yum` | CentOS 7 |
+| `pacman` | Arch, Manjaro, EndeavourOS |
+| `zypper` | openSUSE Leap / Tumbleweed |
+| `apk` | Alpine Linux |
+| `xbps` | Void Linux |
+| `emerge` | Gentoo |
 
-# VM চালু করুন
-qemu start myvm
+The installer verifies each binary after installation and exits with an error if anything is missing.
+If `/dev/kvm` is found, the current user is automatically added to the `kvm` group (re-login required).
 
-# অবস্থা দেখুন
-qemu list
+---
 
-# বিস্তারিত তথ্য
-qemu info myvm
+## Step 2 — Build the Project
 
-# SSH Console
-qemu console myvm
+### Requirements
 
-# বন্ধ করুন
-qemu stop myvm
+| Tool | Purpose |
+|---|---|
+| `go` 1.21+ | Build Go binaries |
+| `python3` + `pip` | Build the GUI |
+| `PyInstaller` | `pip install pyinstaller` |
+| `PyQt6` | `pip install PyQt6` |
 
-# মুছে দিন
-qemu delete myvm
+### Build Commands
+
+```sh
+# Build everything (Go binaries + GUI)
+./build/make
+
+# Build individually
+./build/make qemu        # VM launcher only
+./build/make qemu-ctl    # Control binary only
+./build/make qemu-disk   # Disk manager only
+./build/make gui         # GUI only (PyInstaller)
+
+# Remove all build output (disk images are preserved)
+./build/make clean
+```
+
+> **Important:** The `bin/_internal/` directory must remain beside `bin/virt-forge`.
+> Moving or deleting it will prevent the GUI from starting.
+
+---
+
+## Step 3 — Install Desktop Entry (Optional)
+
+Add Virt-Forge to your application menu:
+
+```sh
+# User-level install (no sudo required)
+./installer/install-desktop.sh
+
+# System-wide install
+sudo ./installer/install-desktop.sh
+
+# Remove
+./installer/install-desktop.sh remove
+sudo ./installer/install-desktop.sh remove
 ```
 
 ---
 
-## Config সিস্টেম
+## Usage
 
-Config দুই স্তরে কাজ করে:
+### Launching the GUI
 
-### 1. `config.auto` (অটো)
-`qemu create` এ অটো তৈরি হয়। সরাসরি এডিট করবেন না।
-
-### 2. `config` (ম্যানুয়াল)
-আপনার পরিবর্তন এখানে করুন। এই ফাইলের মান সব সময় `config.auto` এর উপরে।
-
-```bash
-# শুধু যা বদলাতে চান uncomment করুন
-RAM=4G
-CPU=4
-ACCEL=kvm          # KVM থাকলে
-SPICE_PORT=5931    # port conflict হলে
-EXTRA_ARGS=-device usb-tablet -usb
+```sh
+./bin/virt-forge
 ```
 
-### Config Priority
-```
-manual config  >  config.auto  >  built-in defaults
+Or search for **Virt-Forge** in your application menu if the desktop entry is installed.
+
+---
+
+### VM Launcher Tab
+
+Click **Launch VM in Terminal** to open a terminal window running the `qemu` interactive TUI.
+All VM configuration is handled interactively inside the terminal.
+
+#### Terminal Setup Steps
+
+| Step | Prompt | Example |
+|---|---|---|
+| 1 | Select profile | `1` Normal / `2` Low RAM / `3` Load saved |
+| 2 | Architecture | `1` x86\_64 &nbsp; `2` aarch64 |
+| 3 | Select disk | Choose from list or enter full path |
+| 4 | RAM | `4096` (MB) |
+| 5 | CPU cores | `2` |
+| 6 | Boot from ISO? | `y` for first-time OS install / `n` otherwise |
+| 7 | Enable VNC? | `y` / `n` |
+| 8 | Enable SPICE? | `y` / `n` |
+| 9 | SSH port | `4444` |
+| 10 | SPICE password | Enter a password or press Enter for random |
+| 11 | Extra port forwards | Optional additional port mappings |
+| 12 | Daemon mode? | `y` = background / `n` = foreground |
+| 13 | Save profile? | `y` to reuse settings next time |
+
+#### Connecting to a Running VM
+
+```sh
+# SSH
+ssh user@localhost -p 4444
+
+# SPICE
+remote-viewer spice://localhost:5902
+
+# VNC (display 1 = port 5901)
 ```
 
 ---
 
-## Boot মোড
+### Control Tab
 
-| পরিস্থিতি | কী হয় |
-|-----------|--------|
-| DISK আছে, ISO নেই | disk থেকে boot |
-| DISK আছে, ISO আছে | ISO দিয়ে install, disk এ save |
-| DISK নেই, ISO নেই | isos/ থেকে সিলেক্ট করতে বলে + নতুন disk তৈরির অফার |
-| `--iso` দিয়ে start | config এর ISO override করে |
+Monitor and stop running VMs.
+
+| Button | Action |
+|---|---|
+| ⟳ Refresh | Update the VM list (also auto-refreshes every 5 seconds) |
+| 📊 Status | Show details for all running VMs (PID, ports, lock files) |
+| 🛑 Stop Selected | Stop the selected VM |
+| 💀 Stop All | Stop all running VMs |
 
 ---
 
-## সব Command
+### Disk Manager Tab
 
-```bash
-qemu create   <n> --arch x86_64 --disk 20G --ram 2G --cpu 2
-qemu start    <n> [--iso path] [--ram 2G] [--cpu 4] [--dry-run]
-qemu start    --all
-qemu stop     <n> [--force] [--timeout 30]
-qemu stop     --all
-qemu list
-qemu info     <n>
-qemu attach-iso <n> [iso-path]
-qemu console  <n>
-qemu delete   <n> [--force] [--keep-disk]
+| Button | Action |
+|---|---|
+| ➕ Create Image | Create a new QCOW2 disk image |
+| ℹ Image Info | Display detailed information about an image |
+| 📏 Resize Image | Expand or shrink an existing image |
+| 🔄 Convert Image | Convert between formats: qcow2 / raw / vmdk / vdi / vpc / vhdx |
+
+> **Note:** Enter only the filename (`myvm.qcow2`) — the image is automatically
+> created in the `bin/` directory and will appear in the VM Launcher disk list.
+
+---
+
+### CLI — Direct Binary Usage
+
+All tools can be used directly from the terminal without the GUI:
+
+```sh
+# Launch a VM (interactive TUI)
+./bin/qemu
+
+# List running VMs
+./bin/qemu-ctl list
+
+# Show detailed VM status
+./bin/qemu-ctl status
+
+# Stop a VM
+./bin/qemu-ctl stop
+
+# Create a disk image
+./bin/qemu-disk create
+
+# Show disk image info
+./bin/qemu-disk info
+
+# Resize a disk image
+./bin/qemu-disk resize
+
+# Convert a disk image
+./bin/qemu-disk convert
 ```
 
 ---
 
-## Architectures
+## Lock File System
 
-| Arch | QEMU Binary | Machine |
-|------|-------------|---------|
-| x86_64 | qemu-system-x86_64 | pc |
-| aarch64 | qemu-system-aarch64 | virt + cortex-a72 |
-| riscv64 | qemu-system-riscv64 | virt + opensbi |
+When a VM starts, lock files are created in `~/.virt-forge-locks/`:
+
+```
+~/.virt-forge-locks/
+├── qemu_4444.pid      # SSH port lock (stores the QEMU PID)
+├── ssh_4444.lock
+├── vnc_1.lock
+└── spice_5902.lock
+```
+
+- Lock files are removed automatically when the VM stops
+- Stale locks from crashed sessions are swept on the next `qemu` launch
+- Attempting to start a VM on an already-used port will produce a conflict error
+
+---
+
+## KVM Hardware Acceleration
+
+KVM significantly improves VM performance. To enable it:
+
+```sh
+# Check if KVM is available
+ls /dev/kvm
+
+# Check if your user is in the kvm group
+groups $USER
+
+# Add yourself to the kvm group (re-login required)
+sudo usermod -aG kvm $USER
+```
+
+Without KVM, QEMU falls back to TCG (software emulation) — functional but slower.
+
+---
+
+## Environment Variables
+
+```sh
+# Override the project root (default: auto-detected from binary location)
+VIRT_FORGE_ROOT=/opt/virt-forge ./bin/virt-forge
+
+# Override the bin directory
+VIRT_FORGE_BIN=/custom/bin ./bin/virt-forge
+```
+
+---
+
+## Dependency Summary
+
+| Component | Dependencies |
+|---|---|
+| VM Launcher / CTL / Disk | `qemu-system-x86_64` `qemu-system-aarch64` `qemu-utils` |
+| Build (Go) | `go` 1.21+ |
+| Build (GUI) | `python3` `pyinstaller` `PyQt6` |
+| GUI Runtime | `bin/_internal/` (bundled — no separate install needed) |
+| Terminal (for VM launch) | `xterm` or `konsole` or `gnome-terminal` |

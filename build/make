@@ -2,7 +2,7 @@
 # =============================================================
 #  virt-forge — build script
 #  Usage: ./build/make [target]
-#  Targets: all (default), qemu-run, qemu-ctl, qemu-disk, clean
+#  Targets: all (default), qemu-run, qemu-ctl, qemu-disk, gui, clean
 # =============================================================
 set -eu
 
@@ -13,26 +13,34 @@ ASSETS="$ROOT/assets"
 BIN="$ROOT/bin"
 
 # ── Helpers ───────────────────────────────────────────────────
-build() {
+build_go() {
     NAME="$1"
     SOURCE="./$2"
     OUTPUT="$BIN/$NAME"
 
     printf '🔨 Building %s...\n' "$NAME"
-    # go build must run from assets/ so go.mod is discoverable
     ( cd "$ASSETS" && CGO_ENABLED=0 go build -ldflags="-s -w" -o "$OUTPUT" "$SOURCE" )
     chmod +x "$OUTPUT"
     printf '✅ %s → bin/%s\n\n' "$NAME" "$NAME"
 }
 
+build_gui() {
+    sh "$SCRIPT_DIR/make-gui"
+}
+
 clean() {
     printf '🧹 Cleaning bin/...\n'
-    rm -f "$BIN/qemu-run" "$BIN/qemu-ctl" "$BIN/qemu-disk"
+    rm -f  "$BIN/qemu-run" "$BIN/qemu-ctl" "$BIN/qemu-disk"
+    rm -f  "$BIN/virt-forge"
+    rm -rf "$BIN/_internal"
+    rm -rf "$SCRIPT_DIR/gui-work" "$SCRIPT_DIR/gui-dist"
     printf '✅ Done\n'
 }
 
-# ── Sync dependencies ─────────────────────────────────────────
-( cd "$ASSETS" && go mod tidy )
+# ── Sync Go dependencies ───────────────────────────────────────
+sync_go_deps() {
+    ( cd "$ASSETS" && go mod tidy )
+}
 
 # ── Ensure bin/ exists ────────────────────────────────────────
 mkdir -p "$BIN"
@@ -42,25 +50,33 @@ TARGET="${1:-all}"
 
 case "$TARGET" in
     all)
-        build qemu-run      main.go
-        build qemu-ctl  qemu-ctl.go
-        build qemu-disk qemu-disk.go
+        sync_go_deps
+        build_go qemu-run      main.go
+        build_go qemu-ctl  qemu-ctl.go
+        build_go qemu-disk qemu-disk.go
+        build_gui
         printf '🎉 All binaries built in bin/\n'
         ;;
     qemu)
-        build qemu-run main.go
+        sync_go_deps
+        build_go qemu-run main.go
         ;;
     qemu-ctl)
-        build qemu-ctl qemu-ctl.go
+        sync_go_deps
+        build_go qemu-ctl qemu-ctl.go
         ;;
     qemu-disk)
-        build qemu-disk qemu-disk.go
+        sync_go_deps
+        build_go qemu-disk qemu-disk.go
+        ;;
+    gui)
+        build_gui
         ;;
     clean)
         clean
         ;;
     *)
-        printf 'Usage: %s [all|qemu|qemu-ctl|qemu-disk|clean]\n' "$0"
+        printf 'Usage: %s [all|qemu-run|qemu-ctl|qemu-disk|gui|clean]\n' "$0"
         exit 1
         ;;
 esac
