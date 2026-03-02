@@ -58,12 +58,12 @@ python3 -m PyInstaller \
 #
 rm -f  "$BIN/virt-forge"
 rm -rf "$BIN/_internal"
-mv "$DIST_DIR/virt-forge/virt-forge"  "$BIN/virt-forge"
-mv "$DIST_DIR/virt-forge/_internal"   "$BIN/_internal"
+mv "$DIST_DIR/virt-forge/virt-forge"  "$ROOT/virt-forge"
+mv "$DIST_DIR/virt-forge/_internal"   "$ROOT/_internal"
 
 # ── Cleanup PyInstaller temp dirs ────────────────────────────
 rm -rf "$WORK_DIR" "$DIST_DIR"
 
 printf '✅ GUI built:\n'
-printf '     bin/virt-forge   ← run this\n'
-printf '     bin/_internal/   ← keep beside the binary\n\n'
+printf '     virt-forge   ← run this\n'
+printf '     _internal/   ← keep beside the binary\n\n'

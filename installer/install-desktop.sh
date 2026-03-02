@@ -12,7 +12,7 @@ set -eu
 # ── Paths ─────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
-BINARY="$ROOT/bin/virt-forge"
+BINARY="$ROOT/virt-forge"
 ICON="$SCRIPT_DIR/virt-forge.png"
 
 APP_NAME="virt-forge"
