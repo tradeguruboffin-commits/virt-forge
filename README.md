@@ -1,6 +1,6 @@
 # Virt-Forge
 
-A QEMU virtual machine manager — interactive TUI launcher, control utility, disk manager, and PyQt6 GUI, all written in Go and Python.
+A QEMU virtual machine manager — interactive TUI launcher, control utility, disk manager, and PyQt6 GUI, written in Go and Python.
 
 ---
 
@@ -11,16 +11,14 @@ virt-forge/
 ├── assets/                  # Go source files
 │   ├── go.mod
 │   ├── go.sum
-│   ├── main.go              # qemu — main VM launcher (interactive TUI)
+│   ├── main.go              # qemu-run — main VM launcher (interactive TUI)
 │   ├── qemu-ctl.go          # qemu-ctl — VM status / stop / list
 │   └── qemu-disk.go         # qemu-disk — disk image manager
 │
 ├── bin/                     # Build output (binaries + disk images)
-│   ├── qemu                 # VM launcher binary
+│   ├── qemu-run             # VM launcher binary
 │   ├── qemu-ctl             # Control binary
 │   ├── qemu-disk            # Disk manager binary
-│   ├── virt-forge           # GUI binary (PyInstaller one-dir)
-│   ├── _internal/           # GUI runtime libs — must stay beside the binary
 │   ├── alpine.qcow2         # (example) disk image
 │   └── debian12.qcow2       # (example) disk image
 │
@@ -36,8 +34,13 @@ virt-forge/
 │   ├── install-desktop.sh   # Desktop menu entry installer
 │   └── virt-forge.png       # App icon (512×512)
 │
+├── _internal/               # GUI runtime libs — must stay beside virt-forge binary
+├── virt-forge               # GUI binary (PyInstaller one-dir)
 └── README.md
 ```
+
+> **Important:** `_internal/` must always remain in the same directory as the
+> `virt-forge` binary. Moving or deleting it will prevent the GUI from starting.
 
 ---
 
@@ -63,8 +66,9 @@ sudo ./installer/install-deps.sh
 | `xbps` | Void Linux |
 | `emerge` | Gentoo |
 
-The installer verifies each binary after installation and exits with an error if anything is missing.
-If `/dev/kvm` is found, the current user is automatically added to the `kvm` group (re-login required).
+The installer verifies each binary after installation and exits with an error if
+anything is missing. If `/dev/kvm` is found, the current user is automatically
+added to the `kvm` group (re-login required).
 
 ---
 
@@ -86,17 +90,21 @@ If `/dev/kvm` is found, the current user is automatically added to the `kvm` gro
 ./build/make
 
 # Build individually
-./build/make qemu        # VM launcher only
+./build/make qemu-run    # VM launcher only
 ./build/make qemu-ctl    # Control binary only
 ./build/make qemu-disk   # Disk manager only
-./build/make gui         # GUI only (PyInstaller)
+./build/make gui         # GUI only (PyInstaller one-dir)
 
 # Remove all build output (disk images are preserved)
 ./build/make clean
 ```
 
-> **Important:** The `bin/_internal/` directory must remain beside `bin/virt-forge`.
-> Moving or deleting it will prevent the GUI from starting.
+After a successful build the project root will contain:
+
+```
+virt-forge        ← GUI executable  (run this)
+_internal/        ← runtime libs    (must stay here)
+```
 
 ---
 
@@ -123,7 +131,7 @@ sudo ./installer/install-desktop.sh remove
 ### Launching the GUI
 
 ```sh
-./bin/virt-forge
+./virt-forge
 ```
 
 Or search for **Virt-Forge** in your application menu if the desktop entry is installed.
@@ -132,8 +140,8 @@ Or search for **Virt-Forge** in your application menu if the desktop entry is in
 
 ### VM Launcher Tab
 
-Click **Launch VM in Terminal** to open a terminal window running the `qemu` interactive TUI.
-All VM configuration is handled interactively inside the terminal.
+Click **Launch VM in Terminal** to open a terminal window running the `qemu-run`
+interactive TUI. All VM configuration is handled interactively inside the terminal.
 
 #### Terminal Setup Steps
 
@@ -200,7 +208,7 @@ All tools can be used directly from the terminal without the GUI:
 
 ```sh
 # Launch a VM (interactive TUI)
-./bin/qemu
+./bin/qemu-run
 
 # List running VMs
 ./bin/qemu-ctl list
@@ -239,7 +247,7 @@ When a VM starts, lock files are created in `~/.virt-forge-locks/`:
 ```
 
 - Lock files are removed automatically when the VM stops
-- Stale locks from crashed sessions are swept on the next `qemu` launch
+- Stale locks from crashed sessions are swept on the next `qemu-run` launch
 - Attempting to start a VM on an already-used port will produce a conflict error
 
 ---
@@ -267,10 +275,10 @@ Without KVM, QEMU falls back to TCG (software emulation) — functional but slow
 
 ```sh
 # Override the project root (default: auto-detected from binary location)
-VIRT_FORGE_ROOT=/opt/virt-forge ./bin/virt-forge
+VIRT_FORGE_ROOT=/opt/virt-forge ./virt-forge
 
 # Override the bin directory
-VIRT_FORGE_BIN=/custom/bin ./bin/virt-forge
+VIRT_FORGE_BIN=/custom/bin ./virt-forge
 ```
 
 ---
@@ -282,5 +290,5 @@ VIRT_FORGE_BIN=/custom/bin ./bin/virt-forge
 | VM Launcher / CTL / Disk | `qemu-system-x86_64` `qemu-system-aarch64` `qemu-utils` |
 | Build (Go) | `go` 1.21+ |
 | Build (GUI) | `python3` `pyinstaller` `PyQt6` |
-| GUI Runtime | `bin/_internal/` (bundled — no separate install needed) |
+| GUI Runtime | `_internal/` (bundled — no separate install needed) |
 | Terminal (for VM launch) | `xterm` or `konsole` or `gnome-terminal` |
