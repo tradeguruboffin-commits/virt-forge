@@ -31,8 +31,8 @@ build_gui() {
 clean() {
     printf '🧹 Cleaning bin/...\n'
     rm -f  "$BIN/qemu-run" "$BIN/qemu-ctl" "$BIN/qemu-disk"
-    rm -f  "$BIN/virt-forge"
-    rm -rf "$BIN/_internal"
+    rm -f  "$ROOT/virt-forge"
+    rm -rf "$ROOT/_internal"
     rm -rf "$SCRIPT_DIR/gui-work" "$SCRIPT_DIR/gui-dist"
     printf '✅ Done\n'
 }
