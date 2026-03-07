@@ -330,6 +330,7 @@ class VMTab(QWidget):
 
         # Auto-discovered disks
         self.disk_combo = QComboBox()
+        self.disk_combo.setMaxVisibleItems(8)
         self._refresh_disk_combo()
         self.disk_combo.currentIndexChanged.connect(self._on_disk_combo_changed)
 
