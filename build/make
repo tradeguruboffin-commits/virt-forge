@@ -57,7 +57,7 @@ case "$TARGET" in
         build_gui
         printf '🎉 All binaries built in bin/\n'
         ;;
-    qemu)
+    qemu-run)
         sync_go_deps
         build_go qemu-run main.go
         ;;

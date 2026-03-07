@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -11,71 +10,115 @@ import (
 )
 
 var imgBin string
-var reader = bufio.NewReader(os.Stdin)
 
-//
 // =============================================================
-// INIT
+//  USAGE
 // =============================================================
-//
+
+const usageText = `qemu-disk — QCOW2 image manager
+
+Usage:
+  qemu-disk create  --name <file> --size <size>
+  qemu-disk info    --name <file>
+  qemu-disk resize  --name <file> --size <size>
+  qemu-disk convert --src <file>  --dst <file> --fmt <format>
+
+Size format: number followed by K, M, G, or T  (e.g. 10G, 512M, 2T)
+
+Formats for convert: qcow2, raw, vmdk, vdi, vpc, vhdx, qed, parallels
+
+Examples:
+  qemu-disk create  --name debian.qcow2 --size 20G
+  qemu-disk info    --name debian.qcow2
+  qemu-disk resize  --name debian.qcow2 --size 30G
+  qemu-disk convert --src debian.qcow2 --dst debian.raw --fmt raw
+`
+
+func usage() {
+	fmt.Fprint(os.Stderr, usageText)
+	os.Exit(1)
+}
+
+func usageCmd(cmd string) {
+	switch cmd {
+	case "create":
+		fmt.Fprintln(os.Stderr, "   Usage: qemu-disk create --name <file> --size <size>")
+	case "info":
+		fmt.Fprintln(os.Stderr, "   Usage: qemu-disk info --name <file>")
+	case "resize":
+		fmt.Fprintln(os.Stderr, "   Usage: qemu-disk resize --name <file> --size <size>")
+	case "convert":
+		fmt.Fprintln(os.Stderr, "   Usage: qemu-disk convert --src <file> --dst <file> --fmt <format>")
+	}
+}
+
+// =============================================================
+//  INIT
+// =============================================================
 
 func init() {
 	path, err := exec.LookPath("qemu-img")
 	if err != nil {
-		fmt.Println("❌ qemu-img not found in PATH.")
-		fmt.Println("   Install with: apt install qemu-utils (or equivalent)")
+		fmt.Fprintln(os.Stderr, "❌ qemu-img not found in PATH.")
+		fmt.Fprintln(os.Stderr, "   Install with: apt install qemu-utils (or equivalent)")
 		os.Exit(1)
 	}
 	imgBin = path
 }
 
-//
 // =============================================================
-// HELPERS
+//  MINIMAL FLAG PARSER
+//  Supports: --key value   --key=value
 // =============================================================
-//
 
-func usage() {
-	fmt.Printf("\nUsage: %s <command>\n\n", os.Args[0])
-	fmt.Println("Commands:")
-	fmt.Println("  create    Create new QCOW2 image (interactive)")
-	fmt.Println("  info      Show image info")
-	fmt.Println("  resize    Resize existing image (interactive)")
-	fmt.Println("  convert   Convert image format (interactive)")
-	fmt.Println("\nSizes: 10G, 512M, etc.\n")
-	os.Exit(1)
-}
+type flags map[string]string
 
-func prompt(text string) string {
-	fmt.Print(text)
-	input, _ := reader.ReadString('\n')
-	return strings.TrimSpace(input)
-}
-
-func confirm(text string) bool {
-	fmt.Println(text)
-	fmt.Print("Proceed? [y/N]: ")
-	input, _ := reader.ReadString('\n')
-	choice := strings.TrimSpace(input)
-
-	switch strings.ToLower(choice) {
-	case "y", "yes":
-		return true
-	default:
-		fmt.Println("❌ Operation aborted.")
-		return false
+func parseFlags(args []string) flags {
+	f := make(flags)
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "--") {
+			i++
+			continue
+		}
+		key := strings.TrimPrefix(arg, "--")
+		if idx := strings.IndexByte(key, '='); idx >= 0 {
+			f[key[:idx]] = key[idx+1:]
+			i++
+			continue
+		}
+		if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+			f[key] = args[i+1]
+			i += 2
+		} else {
+			f[key] = ""
+			i++
+		}
 	}
+	return f
 }
+
+func (f flags) require(cmd, key string) (string, error) {
+	v, ok := f[key]
+	if !ok || strings.TrimSpace(v) == "" {
+		usageCmd(cmd)
+		return "", fmt.Errorf("--%s is required", key)
+	}
+	return strings.TrimSpace(v), nil
+}
+
+// =============================================================
+//  VALIDATION
+// =============================================================
 
 func validateSize(size string) error {
 	if size == "" {
-		return errors.New("empty")
+		return errors.New("size cannot be empty")
 	}
-	// [bash parity] bash uses: ''|*[!0-9GMKTgmkt]*)
-	// Go regex is stricter (requires digit(s) then exactly one suffix) — intentional improvement
 	valid := regexp.MustCompile(`^[0-9]+[GMKTgmkt]$`)
 	if !valid.MatchString(size) {
-		return fmt.Errorf("❌ Invalid size format: %s (use e.g. 10G, 512M)", size)
+		return fmt.Errorf("invalid size format: %q  (use e.g. 10G, 512M, 2T)", size)
 	}
 	return nil
 }
@@ -83,167 +126,158 @@ func validateSize(size string) error {
 func requireFile(path string) error {
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
-		return fmt.Errorf("❌ File not found: %s", path)
+		return fmt.Errorf("file not found: %s", path)
 	}
 	return nil
 }
 
-// runCommand runs qemu-img and exits on failure.
-// [bash parity] bash uses set -e so any qemu-img failure exits immediately.
-// Go must replicate this by calling os.Exit(1) on non-zero exit.
-func runCommand(args ...string) {
+var allowedFormats = map[string]bool{
+	"qcow2":     true,
+	"raw":       true,
+	"vmdk":      true,
+	"vdi":       true,
+	"vpc":       true,
+	"vhdx":      true,
+	"qed":       true,
+	"parallels": true,
+}
+
+func validateFormat(fmt_ string) error {
+	if !allowedFormats[fmt_] {
+		return fmt.Errorf("unknown format: %q\n   Known: qcow2, raw, vmdk, vdi, vpc, vhdx, qed, parallels", fmt_)
+	}
+	return nil
+}
+
+// =============================================================
+//  RUNNER
+// =============================================================
+
+func run(args ...string) {
 	cmd := exec.Command(imgBin, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		fmt.Println("❌ Failed:", err)
+		fmt.Fprintln(os.Stderr, "❌ qemu-img failed:", err)
 		os.Exit(1)
 	}
 }
 
-//
 // =============================================================
-// COMMANDS
+//  COMMANDS
 // =============================================================
-//
 
-func cmdCreate() {
-	img := prompt("Enter image name [default.qcow2]: ")
-	if img == "" {
-		img = "default.qcow2"
+func cmdCreate(f flags) {
+	name, err := f.require("create", "name")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
 	}
-
-	size := prompt("Enter image size [10G]: ")
-	if size == "" {
-		size = "10G"
+	size, err := f.require("create", "size")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
 	}
-
 	if err := validateSize(size); err != nil {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, "❌", err)
 		os.Exit(1)
 	}
-
-	fmt.Printf("You are about to create image: %s (%s)\n", img, size)
-
-	if confirm("Creating image...") {
-		runCommand("create", "-f", "qcow2", img, size)
-	}
+	fmt.Printf("Creating %s (%s)…\n", name, size)
+	run("create", "-f", "qcow2", name, size)
+	fmt.Println("✅ Done.")
 }
 
-func cmdInfo() {
-	img := prompt("Enter image name to inspect: ")
-	if img == "" {
-		fmt.Println("❌ No image provided.")
-		usage()
-	}
-
-	if err := requireFile(img); err != nil {
-		fmt.Println(err)
+func cmdInfo(f flags) {
+	name, err := f.require("info", "name")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
 		os.Exit(1)
 	}
-
-	runCommand("info", img)
+	if err := requireFile(name); err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
+	}
+	run("info", name)
 }
 
-func cmdResize() {
-	img := prompt("Enter image to resize: ")
-	if img == "" {
-		fmt.Println("❌ No image provided.")
-		usage()
-	}
-
-	if err := requireFile(img); err != nil {
-		fmt.Println(err)
+func cmdResize(f flags) {
+	name, err := f.require("resize", "name")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
 		os.Exit(1)
 	}
-
-	size := prompt("Enter new size (e.g., 20G, 512M): ")
-	if size == "" {
-		fmt.Println("❌ No size provided.")
-		usage()
+	size, err := f.require("resize", "size")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
 	}
-
+	if err := requireFile(name); err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
+	}
 	if err := validateSize(size); err != nil {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, "❌", err)
 		os.Exit(1)
 	}
-
-	fmt.Printf("You are about to resize image: %s → %s\n", img, size)
-
-	if confirm("Resizing image...") {
-		runCommand("resize", img, size)
-	}
+	fmt.Printf("Resizing %s → %s…\n", name, size)
+	run("resize", name, size)
+	fmt.Println("✅ Done.")
 }
 
-func cmdConvert() {
-	src := prompt("Enter source image: ")
-	if src == "" {
-		fmt.Println("❌ No source image provided.")
-		usage()
+func cmdConvert(f flags) {
+	src, err := f.require("convert", "src")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
 	}
-
+	dst, err := f.require("convert", "dst")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
+	}
+	fmt_, err := f.require("convert", "fmt")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
+	}
 	if err := requireFile(src); err != nil {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, "❌", err)
 		os.Exit(1)
 	}
-
-	dst := prompt("Enter destination image: ")
-	if dst == "" {
-		fmt.Println("❌ No destination image provided.")
-		usage()
-	}
-
-	fmtStr := prompt("Enter destination format (qcow2, raw, vmdk, etc.): ")
-	if fmtStr == "" {
-		fmt.Println("❌ No format provided.")
-		usage()
-	}
-
-	allowed := map[string]bool{
-		"qcow2":     true,
-		"raw":       true,
-		"vmdk":      true,
-		"vdi":       true,
-		"vpc":       true,
-		"vhdx":      true,
-		"qed":       true,
-		"parallels": true,
-	}
-
-	if !allowed[fmtStr] {
-		fmt.Printf("❌ Unknown format: %s\n", fmtStr)
-		fmt.Println("   Known formats: qcow2, raw, vmdk, vdi, vpc, vhdx, qed, parallels")
+	if err := validateFormat(fmt_); err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
 		os.Exit(1)
 	}
-
-	fmt.Printf("You are about to convert: %s → %s (format: %s)\n", src, dst, fmtStr)
-
-	if confirm("Converting image...") {
-		runCommand("convert", "-O", fmtStr, src, dst)
-	}
+	fmt.Printf("Converting %s → %s (format: %s)…\n", src, dst, fmt_)
+	run("convert", "-O", fmt_, src, dst)
+	fmt.Println("✅ Done.")
 }
 
-//
 // =============================================================
-// MAIN
+//  MAIN
 // =============================================================
-//
 
 func main() {
 	if len(os.Args) < 2 {
 		usage()
 	}
 
-	switch os.Args[1] {
+	cmd := os.Args[1]
+	f := parseFlags(os.Args[2:])
+
+	switch cmd {
 	case "create":
-		cmdCreate()
+		cmdCreate(f)
 	case "info":
-		cmdInfo()
+		cmdInfo(f)
 	case "resize":
-		cmdResize()
+		cmdResize(f)
 	case "convert":
-		cmdConvert()
+		cmdConvert(f)
+	case "--help", "-h", "help":
+		fmt.Print(usageText)
 	default:
+		fmt.Fprintf(os.Stderr, "❌ Unknown command: %q\n\n", cmd)
 		usage()
 	}
 }

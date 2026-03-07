@@ -1,6 +1,6 @@
 # Virt-Forge
 
-A QEMU virtual machine manager — interactive TUI launcher, control utility, disk manager, and PyQt6 GUI, written in Go and Python.
+A QEMU virtual machine manager — CLI launcher, control utility, disk manager, and PyQt6 GUI, written in Go and Python.
 
 ---
 
@@ -11,9 +11,9 @@ virt-forge/
 ├── assets/                  # Go source files
 │   ├── go.mod
 │   ├── go.sum
-│   ├── main.go              # qemu-run — main VM launcher (interactive TUI)
+│   ├── main.go              # qemu-run — VM launcher (CLI args)
 │   ├── qemu-ctl.go          # qemu-ctl — VM status / stop / list
-│   └── qemu-disk.go         # qemu-disk — disk image manager
+│   └── qemu-disk.go         # qemu-disk — disk image manager (CLI args)
 │
 ├── bin/                     # Build output (binaries + disk images)
 │   ├── qemu-run             # VM launcher binary
@@ -140,26 +140,24 @@ Or search for **Virt-Forge** in your application menu if the desktop entry is in
 
 ### VM Launcher Tab
 
-Click **Launch VM in Terminal** to open a terminal window running the `qemu-run`
-interactive TUI. All VM configuration is handled interactively inside the terminal.
+Configure and launch a VM directly from the GUI — no terminal required.
 
-#### Terminal Setup Steps
+| Field | Description |
+|---|---|
+| **Profile** | `normal` (4 GB RAM, 2 CPU) / `lowram` (2 GB RAM, 1 CPU) / saved profile |
+| **Architecture** | `x86_64` or `aarch64` |
+| **Disk** | Select from `bin/` or browse / enter a full path |
+| **Boot ISO** | Optional — for first-time OS install only |
+| **RAM / CPU** | Override the profile defaults |
+| **SSH port** | Host port forwarded to guest port 22 (default: `4444`) |
+| **Extra forwards** | Additional port mappings, e.g. `8080:8080,5432:5432` |
+| **VNC** | Enable remote display; set port in the `5900–5999` range |
+| **SPICE** | Enable SPICE display; requires a password |
+| **Audio** | Enable PulseAudio passthrough (off by default) |
+| **Mode** | Daemon (background) or foreground |
 
-| Step | Prompt | Example |
-|---|---|---|
-| 1 | Select profile | `1` Normal / `2` Low RAM / `3` Load saved |
-| 2 | Architecture | `1` x86\_64 &nbsp; `2` aarch64 |
-| 3 | Select disk | Choose from list or enter full path |
-| 4 | RAM | `4096` (MB) |
-| 5 | CPU cores | `2` |
-| 6 | Boot from ISO? | `y` for first-time OS install / `n` otherwise |
-| 7 | Enable VNC? | `y` / `n` |
-| 8 | Enable SPICE? | `y` / `n` |
-| 9 | SSH port | `4444` |
-| 10 | SPICE password | Enter a password or press Enter for random |
-| 11 | Extra port forwards | Optional additional port mappings |
-| 12 | Daemon mode? | `y` = background / `n` = foreground |
-| 13 | Save profile? | `y` to reuse settings next time |
+Click **🚀 Launch VM** — the binary starts QEMU directly and reports success or
+failure in the console area below the button.
 
 #### Connecting to a Running VM
 
@@ -167,10 +165,11 @@ interactive TUI. All VM configuration is handled interactively inside the termin
 # SSH
 ssh user@localhost -p 4444
 
-# SPICE
-remote-viewer spice://localhost:5902
+# VNC (connect to the port you set, e.g. 5909)
+# Use any VNC viewer: TigerVNC, Remmina, etc.
 
-# VNC (display 1 = port 5901)
+# SPICE
+remote-viewer spice://localhost:5910
 ```
 
 ---
@@ -194,42 +193,82 @@ Monitor and stop running VMs.
 |---|---|
 | ➕ Create Image | Create a new QCOW2 disk image |
 | ℹ Image Info | Display detailed information about an image |
-| 📏 Resize Image | Expand or shrink an existing image |
-| 🔄 Convert Image | Convert between formats: qcow2 / raw / vmdk / vdi / vpc / vhdx |
+| 📏 Resize Image | Expand an existing image |
+| 🔄 Convert Image | Convert between formats: `qcow2` / `raw` / `vmdk` / `vdi` / `vpc` / `vhdx` |
 
-> **Note:** Enter only the filename (`myvm.qcow2`) — the image is automatically
-> created in the `bin/` directory and will appear in the VM Launcher disk list.
+Use the **Browse** button in each dialog to pick a file, or enter a full path
+directly. Bare filenames (no directory) are resolved relative to `bin/`.
 
 ---
 
 ### CLI — Direct Binary Usage
 
-All tools can be used directly from the terminal without the GUI:
+All tools accept CLI arguments directly — no interactive prompts.
+
+#### qemu-run
 
 ```sh
-# Launch a VM (interactive TUI)
-./bin/qemu-run
+./bin/qemu-run --disk <path> [options]
 
-# List running VMs
-./bin/qemu-ctl list
+Options:
+  --profile  normal|lowram|<saved-name>   (default: normal)
+  --arch     x86_64|aarch64
+  --disk     <path>                        required
+  --iso      <path>
+  --ram      <MB>
+  --cpu      <n>
+  --ssh      <port>                        (default: 4444)
+  --vnc      <port>                        (default: 5909)
+  --no-vnc
+  --spice    <port>
+  --spice-pass <password>
+  --no-spice
+  --audio
+  --no-audio
+  --fg                                     run in foreground (default: daemon)
+  --extra-fwds hostport:guestport,...
+```
 
-# Show detailed VM status
-./bin/qemu-ctl status
+Examples:
 
-# Stop a VM
-./bin/qemu-ctl stop
+```sh
+# Quick launch with defaults
+./bin/qemu-run --disk bin/alpine.qcow2
 
-# Create a disk image
-./bin/qemu-disk create
+# Custom RAM, VNC port, foreground
+./bin/qemu-run --disk bin/debian12.qcow2 --ram 8192 --cpu 4 --vnc 5901 --fg
 
-# Show disk image info
-./bin/qemu-disk info
+# With SPICE and extra port forward
+./bin/qemu-run --disk bin/alpine.qcow2 --spice 5910 --spice-pass hunter2 --extra-fwds 8080:8080
+```
 
-# Resize a disk image
-./bin/qemu-disk resize
+#### qemu-ctl
 
-# Convert a disk image
-./bin/qemu-disk convert
+```sh
+./bin/qemu-ctl list      # list running VMs
+./bin/qemu-ctl status    # show PID, ports, lock files
+./bin/qemu-ctl stop      # stop a VM (interactive selection)
+./bin/qemu-ctl debug     # raw parsed fields + lock dir contents
+```
+
+#### qemu-disk
+
+```sh
+./bin/qemu-disk create  --name <file> --size <size>
+./bin/qemu-disk info    --name <file>
+./bin/qemu-disk resize  --name <file> --size <size>
+./bin/qemu-disk convert --src <file>  --dst <file> --fmt <format>
+```
+
+Size format: number followed by `K`, `M`, `G`, or `T` — e.g. `20G`, `512M`.
+
+Examples:
+
+```sh
+./bin/qemu-disk create  --name bin/debian.qcow2 --size 20G
+./bin/qemu-disk info    --name bin/alpine.qcow2
+./bin/qemu-disk resize  --name bin/alpine.qcow2 --size 30G
+./bin/qemu-disk convert --src bin/alpine.qcow2 --dst bin/alpine.raw --fmt raw
 ```
 
 ---
@@ -240,15 +279,15 @@ When a VM starts, lock files are created in `~/.virt-forge-locks/`:
 
 ```
 ~/.virt-forge-locks/
-├── qemu_4444.pid      # SSH port lock (stores the QEMU PID)
+├── qemu_4444.pid      # QEMU process ID (keyed by SSH port)
 ├── ssh_4444.lock
-├── vnc_1.lock
-└── spice_5902.lock
+├── vnc_5909.lock      # keyed by VNC port (not display number)
+└── spice_5910.lock
 ```
 
 - Lock files are removed automatically when the VM stops
-- Stale locks from crashed sessions are swept on the next `qemu-run` launch
-- Attempting to start a VM on an already-used port will produce a conflict error
+- Stale locks from crashed sessions are detected and reported by `qemu-ctl status`
+- Starting a VM on an already-used port produces a conflict error
 
 ---
 
@@ -260,7 +299,7 @@ KVM significantly improves VM performance. To enable it:
 # Check if KVM is available
 ls /dev/kvm
 
-# Check if your user is in the kvm group
+# Check your group membership
 groups $USER
 
 # Add yourself to the kvm group (re-login required)
@@ -291,4 +330,3 @@ VIRT_FORGE_BIN=/custom/bin ./virt-forge
 | Build (Go) | `go` 1.21+ |
 | Build (GUI) | `python3` `pyinstaller` `PyQt6` |
 | GUI Runtime | `_internal/` (bundled — no separate install needed) |
-| Terminal (for VM launch) | `xterm` or `konsole` or `gnome-terminal` |

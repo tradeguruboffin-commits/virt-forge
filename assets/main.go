@@ -3,9 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/rand"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -14,40 +12,100 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"golang.org/x/term"
 )
 
 // =============================================================
 //  VERSION
 // =============================================================
 
-const version = "2.0.0"
+const version = "3.0.1"
+
+// =============================================================
+//  USAGE
+// =============================================================
+
+const usage = `qemu-run v` + version + ` — QEMU VM launcher
+
+Usage:
+  qemu-run --disk <path> [options]
+
+Required:
+  --disk <path>          QCOW2 disk image path
+
+Profile (default: normal):
+  --profile <name>       Built-in: normal, lowram
+                         Saved:    any name in ~/.vm_profiles/
+
+VM config (overrides profile defaults):
+  --arch    <arch>       x86_64 | aarch64  (default: x86_64)
+  --ram     <MB>         RAM in megabytes
+  --cpu     <n>          CPU core count
+  --iso     <path>       Boot ISO (first boot / OS install)
+
+Network:
+  --ssh     <port>       Host SSH forward port  (default: 4444)
+  --extra-fwds <list>    Extra port forwards, comma-separated
+                         Format: hostport:guestport,...
+                         Example: --extra-fwds 8080:8080,5432:5432
+
+Display:
+  --vnc     <port>       Enable VNC on given port, e.g. 5901 (default: 5909)
+  --no-vnc               Disable VNC
+  --spice   <port>       Enable SPICE on given port (requires --spice-pass)
+  --spice-pass <pass>    SPICE password (required to activate SPICE)
+  --no-spice             Disable SPICE
+
+Audio:
+  --audio                Enable audio (requires PulseAudio; off by default)
+  --no-audio             Disable audio explicitly (always off for aarch64)
+
+Mode:
+  --fg                   Run in foreground (default: background daemon)
+
+Other:
+  --help                 Show this help
+
+Examples:
+  # Quick launch with defaults
+  qemu-run --disk ~/vms/debian.qcow2
+
+  # Low RAM profile, custom SSH port, SPICE enabled
+  qemu-run --profile lowram --disk ~/vms/alpine.qcow2 \
+           --ssh 5555 --spice 5910 --spice-pass hunter2
+
+  # Install from ISO, foreground mode
+  qemu-run --disk ~/vms/new.qcow2 --iso ~/Downloads/debian.iso \
+           --ram 2048 --fg
+
+  # Load saved profile, override RAM, add extra ports
+  qemu-run --profile myvm --disk ~/vms/dev.qcow2 \
+           --ram 8192 --extra-fwds 8080:8080,5432:5432
+`
 
 // =============================================================
 //  STRUCTS
 // =============================================================
 
+type PortForward struct {
+	HostPort  int
+	GuestPort int
+}
+
 type VMConfig struct {
+	Arch       string
+	Disk       string
+	ISO        string // not saved to profile
+	SpicePass  string // not saved to profile
 	RAM        int
 	CPU        int
-	Disk       string
-	ISO        string // intentionally not saved to profile
 	SSHPort    int
-	VNCDisplay int
+	VNCPort    int // user-facing port, e.g. 5909; display = VNCPort - 5900
 	SPICEPort  int
+	ExtraFwds  []PortForward
 	Audio      bool
 	UseVNC     bool
 	UseSPICE   bool
 	Daemon     bool
-	ExtraFwds  []PortForward
-	Arch       string
-	SpicePass  string // intentionally not saved to profile
-}
-
-type PortForward struct {
-	HostPort  int
-	GuestPort int
 }
 
 // =============================================================
@@ -59,6 +117,40 @@ var (
 	configDir string
 	lockDir   string
 )
+
+// =============================================================
+//  BUILT-IN PROFILE TEMPLATES
+// =============================================================
+
+func profileNormal() *VMConfig {
+	return &VMConfig{
+		Arch:       "x86_64",
+		RAM:        4096,
+		CPU:        2,
+		SSHPort:    4444,
+		VNCPort:    5909,
+		SPICEPort:  5908,
+		Audio:      false,
+		UseVNC:     true,
+		UseSPICE:   false,
+		Daemon:     true,
+	}
+}
+
+func profileLowRAM() *VMConfig {
+	return &VMConfig{
+		Arch:       "x86_64",
+		RAM:        2048,
+		CPU:        1,
+		SSHPort:    4444,
+		VNCPort:    5909,
+		SPICEPort:  5908,
+		Audio:      false,
+		UseVNC:     true,
+		UseSPICE:   false,
+		Daemon:     true,
+	}
+}
 
 // =============================================================
 //  ROOT RESOLVER
@@ -93,36 +185,24 @@ func checkLock(path string) error {
 		os.Remove(path)
 		return nil
 	}
-
-	pidStr := strings.TrimSpace(string(data))
-	if pidStr == "" {
-		fmt.Printf("  ⚠ Stale lock removed: %s (invalid PID)\n", path)
-		os.Remove(path)
-		return nil
-	}
-
-	pid, err := strconv.Atoi(pidStr)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil || pid <= 0 {
 		fmt.Printf("  ⚠ Stale lock removed: %s (invalid PID)\n", path)
 		os.Remove(path)
 		return nil
 	}
-
 	proc, err := os.FindProcess(pid)
 	if err == nil {
-		if signalErr := proc.Signal(syscall.Signal(0)); signalErr == nil {
+		if proc.Signal(syscall.Signal(0)) == nil {
 			return fmt.Errorf("port already in use — PID %d still running (lock: %s)", pid, path)
 		}
 	}
-
 	fmt.Printf("  ⚠ Stale lock removed: %s (PID %d no longer exists)\n", path, pid)
 	os.Remove(path)
 	return nil
 }
 
 func createLock(path string) error {
-	// Write "0\n" — matches bash's initial empty-PID convention.
-	// checkLock treats pid==0 as stale, so an unupdated lock is self-healing.
 	return os.WriteFile(path, []byte("0\n"), 0644)
 }
 
@@ -132,7 +212,7 @@ func updateLocksWithPID(cfg *VMConfig, pid int) {
 	}
 	write(lockPath(fmt.Sprintf("ssh_%d.lock", cfg.SSHPort)))
 	if cfg.UseVNC {
-		write(lockPath(fmt.Sprintf("vnc_%d.lock", cfg.VNCDisplay)))
+		write(lockPath(fmt.Sprintf("vnc_%d.lock", cfg.VNCPort)))
 	}
 	if cfg.UseSPICE {
 		write(lockPath(fmt.Sprintf("spice_%d.lock", cfg.SPICEPort)))
@@ -142,10 +222,6 @@ func updateLocksWithPID(cfg *VMConfig, pid int) {
 	}
 }
 
-// sweepStaleLocks removes any .lock file in lockDir whose PID is dead.
-// This handles the case where a previous session used different ports
-// (e.g. VNC display 3 → display 1) leaving orphan lock files behind,
-// because those ports are never checked by acquireLocks of the new session.
 func sweepStaleLocks() {
 	entries, err := os.ReadDir(lockDir)
 	if err != nil {
@@ -161,8 +237,7 @@ func sweepStaleLocks() {
 		if err != nil {
 			continue
 		}
-		pidStr := strings.TrimSpace(string(data))
-		pid, err := strconv.Atoi(pidStr)
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 		if err != nil || pid <= 0 {
 			fmt.Printf("  ⚠ Sweeping orphan lock (invalid PID): %s\n", name)
 			os.Remove(p)
@@ -176,29 +251,29 @@ func sweepStaleLocks() {
 	}
 }
 
-func acquireLocks(cfg *VMConfig) error {
-	// Remove stale locks from previous sessions before checking conflicts.
-	sweepStaleLocks()
-
-	checks := []string{
-		lockPath(fmt.Sprintf("ssh_%d.lock", cfg.SSHPort)),
-	}
+func lockPaths(cfg *VMConfig) []string {
+	paths := []string{lockPath(fmt.Sprintf("ssh_%d.lock", cfg.SSHPort))}
 	if cfg.UseVNC {
-		checks = append(checks, lockPath(fmt.Sprintf("vnc_%d.lock", cfg.VNCDisplay)))
+		paths = append(paths, lockPath(fmt.Sprintf("vnc_%d.lock", cfg.VNCPort)))
 	}
 	if cfg.UseSPICE {
-		checks = append(checks, lockPath(fmt.Sprintf("spice_%d.lock", cfg.SPICEPort)))
+		paths = append(paths, lockPath(fmt.Sprintf("spice_%d.lock", cfg.SPICEPort)))
 	}
 	for _, f := range cfg.ExtraFwds {
-		checks = append(checks, lockPath(fmt.Sprintf("extra_%d.lock", f.HostPort)))
+		paths = append(paths, lockPath(fmt.Sprintf("extra_%d.lock", f.HostPort)))
 	}
+	return paths
+}
 
-	for _, p := range checks {
+func acquireLocks(cfg *VMConfig) error {
+	sweepStaleLocks()
+	paths := lockPaths(cfg)
+	for _, p := range paths {
 		if err := checkLock(p); err != nil {
 			return err
 		}
 	}
-	for _, p := range checks {
+	for _, p := range paths {
 		if err := createLock(p); err != nil {
 			return fmt.Errorf("failed to create lock %s: %w", p, err)
 		}
@@ -208,186 +283,56 @@ func acquireLocks(cfg *VMConfig) error {
 
 func cleanupLocks(cfg *VMConfig) {
 	if cfg == nil {
-		return // daemon success: locks must persist for the running QEMU process
+		return
 	}
-	fmt.Println("\nCleaning up locks...")
-	os.Remove(lockPath(fmt.Sprintf("ssh_%d.lock", cfg.SSHPort)))
-	if cfg.UseVNC {
-		os.Remove(lockPath(fmt.Sprintf("vnc_%d.lock", cfg.VNCDisplay)))
-	}
-	if cfg.UseSPICE {
-		os.Remove(lockPath(fmt.Sprintf("spice_%d.lock", cfg.SPICEPort)))
-	}
-	for _, f := range cfg.ExtraFwds {
-		os.Remove(lockPath(fmt.Sprintf("extra_%d.lock", f.HostPort)))
+	for _, p := range lockPaths(cfg) {
+		os.Remove(p)
 	}
 }
 
 // =============================================================
-//  INPUT HELPERS
+//  FATAL
 // =============================================================
 
-var stdinReader = bufio.NewReader(os.Stdin)
+var activeCfg *VMConfig
 
-func readLine() string {
-	line, _ := stdinReader.ReadString('\n')
-	return strings.TrimSpace(line)
-}
-
-func readInt(prompt string, def int) int {
-	for {
-		fmt.Printf("%s [%d]: ", prompt, def)
-		input := readLine()
-		if input == "" {
-			return def
-		}
-		val, err := strconv.Atoi(input)
-		if err != nil || val <= 0 {
-			fmt.Printf("  ! Please enter a valid number > 0 (e.g. %d)\n", def)
-			continue
-		}
-		return val
-	}
-}
-
-func readYesNo(prompt string, def bool) bool {
-	defLabel := "Y/n"
-	if !def {
-		defLabel = "y/N"
-	}
-	fmt.Printf("%s (%s): ", prompt, defLabel)
-	input := strings.ToLower(strings.TrimSpace(readLine()))
-	if input == "" {
-		return def
-	}
-	return strings.HasPrefix(input, "y")
-}
-
-// readPassword reads a password without echoing to the terminal.
-// Falls back to visible readLine() if stdin is not a TTY (e.g. piped input).
-func readPassword(prompt string) string {
-	fmt.Print(prompt)
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		pw, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Println() // newline after hidden input
-		if err == nil {
-			return strings.TrimSpace(string(pw))
-		}
-	}
-	// Not a TTY or read failed — fall back to visible input
-	return readLine()
+func die(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "❌ "+format+"\n", args...)
+	cleanupLocks(activeCfg)
+	os.Exit(1)
 }
 
 // =============================================================
 //  VALIDATION
 // =============================================================
 
-func validateName(name string) error {
-	if name == "" {
-		return errors.New("name cannot be empty")
-	}
-	if strings.Contains(name, "/") || strings.Contains(name, "..") {
-		return errors.New("name cannot contain '/' or '..'")
-	}
-	return nil
-}
-
 func validatePort(p int) bool {
 	return p >= 1 && p <= 65535
+}
+
+func validateName(name string) bool {
+	return name != "" &&
+		!strings.Contains(name, "/") &&
+		!strings.Contains(name, "..")
 }
 
 func validateDiskPath(path string) error {
 	if strings.Contains(path, ",") {
 		return fmt.Errorf(
 			"disk path contains a comma — not allowed in QEMU drive args\n"+
-				"   Please rename the file to remove commas: %s", path)
+				"   Please rename: %s", path)
 	}
 	return nil
 }
 
 // =============================================================
-//  PULSEAUDIO (Linux only, best-effort)
+//  SAVED PROFILE LOADER
 // =============================================================
 
-func ensurePulseAudio() {
-	if _, err := exec.LookPath("pulseaudio"); err != nil {
-		return // not installed — skip silently
-	}
-
-	check := exec.Command("pulseaudio", "--check")
-	if check.Run() == nil {
-		return // already running
-	}
-
-	start := exec.Command("pulseaudio",
-		"--start",
-		"--exit-idle-time=-1",
-		"--daemonize=yes",
-	)
-	start.Stdout = io.Discard
-	start.Stderr = io.Discard
-	start.Run() // ignore errors — audio is optional
-}
-
-// =============================================================
-//  SPICE PASSWORD  (3-tier: crypto/rand → urandom → timestamp)
-// =============================================================
-
-func generatePassword() string {
-	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@#%"
-	const length = 16
-
-	buf := make([]byte, length)
-	if _, err := rand.Read(buf); err == nil {
-		for i := range buf {
-			buf[i] = chars[int(buf[i])%len(chars)]
-		}
-		return string(buf)
-	}
-
-	// Fallback: /dev/urandom via od
-	if out, err := exec.Command(
-		"sh", "-c",
-		`od -A n -t x1 /dev/urandom | tr -d ' \n' | head -c 16`,
-	).Output(); err == nil && len(out) >= length {
-		return string(out[:length])
-	}
-
-	// Last resort: timestamp-based (low entropy, warn user)
-	ts := strconv.FormatInt(time.Now().UnixNano(), 36)
-	for len(ts) < length {
-		ts += ts
-	}
-	fmt.Println("  ⚠ crypto/rand unavailable — using low-entropy fallback password")
-	return ts[:length]
-}
-
-// =============================================================
-//  PROFILE ENGINE
-// =============================================================
-
-func listProfiles() ([]string, error) {
-	entries, err := os.ReadDir(configDir)
+func loadSavedProfile(name string, cfg *VMConfig) error {
+	f, err := os.Open(filepath.Join(configDir, name))
 	if err != nil {
-		return nil, err
-	}
-	var profiles []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			profiles = append(profiles, e.Name())
-		}
-	}
-	return profiles, nil
-}
-
-func loadProfile(name string, cfg *VMConfig) error {
-	if err := validateName(name); err != nil {
-		return err
-	}
-	path := filepath.Join(configDir, name)
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("profile not found: %s", name)
+		return fmt.Errorf("saved profile not found: %s", name)
 	}
 	defer f.Close()
 
@@ -402,8 +347,11 @@ func loadProfile(name string, cfg *VMConfig) error {
 			continue
 		}
 		key, val := parts[0], parts[1]
-
 		switch key {
+		case "ARCH":
+			if val == "x86_64" || val == "aarch64" {
+				cfg.Arch = val
+			}
 		case "RAM":
 			if v, err := strconv.Atoi(val); err == nil && v > 0 {
 				cfg.RAM = v
@@ -421,8 +369,9 @@ func loadProfile(name string, cfg *VMConfig) error {
 				cfg.SSHPort = v
 			}
 		case "VNCDISPLAY":
+			// stored as display number (legacy) — convert to port
 			if v, err := strconv.Atoi(val); err == nil && v >= 0 {
-				cfg.VNCDisplay = v
+				cfg.VNCPort = 5900 + v
 			}
 		case "SPICEPORT":
 			if v, err := strconv.Atoi(val); err == nil && validatePort(v) {
@@ -436,10 +385,6 @@ func loadProfile(name string, cfg *VMConfig) error {
 			cfg.UseSPICE = val == "1"
 		case "DAEMON":
 			cfg.Daemon = val == "1"
-		case "ARCH":
-			if val == "x86_64" || val == "aarch64" {
-				cfg.Arch = val
-			}
 		case "EXTRA_FWDS":
 			if val != "" {
 				parseExtraFwds(val, cfg)
@@ -447,41 +392,6 @@ func loadProfile(name string, cfg *VMConfig) error {
 		}
 	}
 	return scanner.Err()
-}
-
-func saveProfile(name string, cfg *VMConfig) error {
-	if err := validateName(name); err != nil {
-		return err
-	}
-	path := filepath.Join(configDir, name)
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	kv := func(k, v string) { fmt.Fprintf(f, "%s=%s\n", k, v) }
-	b2i := func(b bool) string {
-		if b {
-			return "1"
-		}
-		return "0"
-	}
-
-	// ISO and SpicePass are intentionally NOT saved (same as shell version)
-	kv("RAM", strconv.Itoa(cfg.RAM))
-	kv("CPU", strconv.Itoa(cfg.CPU))
-	kv("DISK", cfg.Disk)
-	kv("SSHPORT", strconv.Itoa(cfg.SSHPort))
-	kv("VNCDISPLAY", strconv.Itoa(cfg.VNCDisplay))
-	kv("SPICEPORT", strconv.Itoa(cfg.SPICEPort))
-	kv("AUDIO", b2i(cfg.Audio))
-	kv("USE_VNC", b2i(cfg.UseVNC))
-	kv("USE_SPICE", b2i(cfg.UseSPICE))
-	kv("DAEMON", b2i(cfg.Daemon))
-	kv("ARCH", cfg.Arch)
-	kv("EXTRA_FWDS", serializeFwds(cfg.ExtraFwds))
-	return nil
 }
 
 // =============================================================
@@ -499,17 +409,9 @@ func parseExtraFwds(val string, cfg *VMConfig) {
 		if e1 == nil && e2 == nil && validatePort(h) && validatePort(g) {
 			cfg.ExtraFwds = append(cfg.ExtraFwds, PortForward{h, g})
 		} else {
-			fmt.Printf("  ! Invalid port pair skipped: '%s'\n", pair)
+			fmt.Fprintf(os.Stderr, "  ⚠ Invalid port pair skipped: '%s'\n", pair)
 		}
 	}
-}
-
-func serializeFwds(fwds []PortForward) string {
-	parts := make([]string, len(fwds))
-	for i, f := range fwds {
-		parts[i] = fmt.Sprintf("%d:%d", f.HostPort, f.GuestPort)
-	}
-	return strings.Join(parts, ",")
 }
 
 func printFwds(fwds []PortForward) {
@@ -519,195 +421,47 @@ func printFwds(fwds []PortForward) {
 }
 
 // =============================================================
-//  EXTRA PORT FORWARD INTERACTIVE ENGINE
+//  SPICE PASSWORD GENERATOR
 // =============================================================
 
-func configureExtraFwds(cfg *VMConfig) {
-	fmt.Println("\n----- Extra Port Forwarding -----")
-	fmt.Println("  (SSH is already forwarded — this is for additional ports)")
+func generatePassword() string {
+	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@#%"
+	const length = 16
 
-	if len(cfg.ExtraFwds) > 0 {
-		fmt.Println("  Loaded from profile:")
-		printFwds(cfg.ExtraFwds)
-	}
-
-	for {
-		fmt.Println("\n  a) Add port")
-		fmt.Println("  d) Delete port")
-		fmt.Println("  c) Load preset")
-		fmt.Println("  s) Done / skip")
-		fmt.Print("\n  Choice [s]: ")
-
-		opt := strings.ToLower(readLine())
-		if opt == "" {
-			opt = "s"
+	buf := make([]byte, length)
+	if _, err := rand.Read(buf); err == nil {
+		for i := range buf {
+			buf[i] = chars[int(buf[i])%len(chars)]
 		}
-
-		switch opt {
-		case "a":
-			fmt.Print("    Host port  (on your machine): ")
-			hStr := readLine()
-			fmt.Print("    Guest port (inside the VM)  : ")
-			gStr := readLine()
-
-			h, e1 := strconv.Atoi(hStr)
-			g, e2 := strconv.Atoi(gStr)
-			if e1 != nil || e2 != nil || !validatePort(h) || !validatePort(g) {
-				fmt.Println("    ! Port must be between 1-65535")
-				continue
-			}
-			// Duplicate host-port check — QEMU will error, better to warn early
-			for _, existing := range cfg.ExtraFwds {
-				if existing.HostPort == h {
-					fmt.Printf("    ⚠ Host port %d is already forwarded (to VM:%d) — QEMU will reject duplicates\n",
-						h, existing.GuestPort)
-					break
-				}
-			}
-			if h == cfg.SSHPort {
-				fmt.Printf("    ⚠ Host port %d is already used for SSH forwarding\n", h)
-			}
-			cfg.ExtraFwds = append(cfg.ExtraFwds, PortForward{h, g})
-			fmt.Printf("    Added: localhost:%d  →  VM:%d\n", h, g)
-
-		case "d":
-			if len(cfg.ExtraFwds) == 0 {
-				fmt.Println("  No extra ports configured.")
-				continue
-			}
-			printFwds(cfg.ExtraFwds)
-			fmt.Print("  Which number to remove? ")
-			n, err := strconv.Atoi(readLine())
-			if err != nil || n < 1 || n > len(cfg.ExtraFwds) {
-				fmt.Println("  ! Please enter a valid number")
-				continue
-			}
-			cfg.ExtraFwds = append(cfg.ExtraFwds[:n-1], cfg.ExtraFwds[n:]...)
-			fmt.Println("  Removed.")
-
-		case "c":
-			fmt.Println("\n  Presets:")
-			fmt.Println("    1) Web dev     — 8000, 8080, 9000")
-			fmt.Println("    2) HTTPS / TLS — 443,  8443, 9443")
-			fmt.Println("    3) Database    — 5432, 3306, 6379")
-			fmt.Println("    4) Full stack  — 8000, 8080, 9000, 5432, 6379")
-			fmt.Println("    5) SPICE extra — 5908, 5909")
-			fmt.Println("    6) Custom list — enter manually")
-			fmt.Print("  Select [1-6]: ")
-			sel := readLine()
-
-			switch sel {
-			case "1":
-				addPreset(cfg, [][2]int{{8000, 8000}, {8080, 8080}, {9000, 9000}})
-			case "2":
-				addPreset(cfg, [][2]int{{443, 443}, {8443, 8443}, {9443, 9443}})
-			case "3":
-				addPreset(cfg, [][2]int{{5432, 5432}, {3306, 3306}, {6379, 6379}})
-			case "4":
-				addPreset(cfg, [][2]int{{8000, 8000}, {8080, 8080}, {9000, 9000}, {5432, 5432}, {6379, 6379}})
-			case "5":
-				addPreset(cfg, [][2]int{{5908, 5908}, {5909, 5909}})
-			case "6":
-				fmt.Print("  Enter list (hostport:guestport,...): ")
-				parseExtraFwds(readLine(), cfg)
-			default:
-				fmt.Println("  ! Please choose between 1-6")
-				continue
-			}
-			fmt.Println("  Preset added.")
-
-		case "s":
-			return
-
-		default:
-			fmt.Println("  ! Please type a / d / c / s")
-			continue
-		}
-
-		fmt.Println()
-		if len(cfg.ExtraFwds) > 0 {
-			fmt.Println("  Current extra forwards:")
-			printFwds(cfg.ExtraFwds)
-		} else {
-			fmt.Println("  (no extra ports configured)")
-		}
+		return string(buf)
 	}
-}
-
-func addPreset(cfg *VMConfig, pairs [][2]int) {
-	for _, p := range pairs {
-		cfg.ExtraFwds = append(cfg.ExtraFwds, PortForward{p[0], p[1]})
+	if out, err := exec.Command(
+		"sh", "-c", `od -A n -t x1 /dev/urandom | tr -d ' \n' | head -c 16`,
+	).Output(); err == nil && len(out) >= length {
+		return string(out[:length])
 	}
+	ts := strconv.FormatInt(time.Now().UnixNano(), 36)
+	for len(ts) < length {
+		ts += ts
+	}
+	return ts[:length]
 }
 
 // =============================================================
-//  ARCHITECTURE SELECTION
+//  PULSEAUDIO  (Linux only, best-effort)
 // =============================================================
 
-func selectArchitecture(cfg *VMConfig) {
-	fmt.Println("\n----- Architecture -----")
-	fmt.Println("  1) x86_64  (PC / Windows / most Linux ISOs)")
-	fmt.Println("  2) aarch64 (ARM64 / Raspberry Pi / ARM Linux)")
-	fmt.Printf("Select architecture [%s]: ", cfg.Arch)
-
-	switch readLine() {
-	case "1":
-		cfg.Arch = "x86_64"
-	case "2":
-		cfg.Arch = "aarch64"
+func ensurePulseAudio() {
+	if _, err := exec.LookPath("pulseaudio"); err != nil {
+		return
 	}
-	fmt.Println("  → Architecture:", cfg.Arch)
-}
-
-// =============================================================
-//  DISK DISCOVERY
-// =============================================================
-
-func discoverDisks() ([]string, error) {
-	return filepath.Glob(filepath.Join(vfRoot, "*.qcow2"))
-}
-
-func selectDisk(cfg *VMConfig) error {
-	fmt.Println("\n----- Available QCOW2 Disks -----")
-	disks, _ := discoverDisks()
-
-	if len(disks) == 0 {
-		fmt.Println("  No qcow2 disks found.")
-		fmt.Print("Enter full disk path: ")
-		cfg.Disk = readLine()
-	} else {
-		for i, d := range disks {
-			fmt.Printf("  %d) %s\n", i+1, d)
-		}
-		fmt.Printf("  %d) Manual path\n", len(disks)+1)
-		choice := readInt("Select disk", 1) - 1
-
-		if choice >= 0 && choice < len(disks) {
-			cfg.Disk = disks[choice]
-		} else {
-			fmt.Print("Enter full disk path: ")
-			cfg.Disk = readLine()
-		}
+	if exec.Command("pulseaudio", "--check").Run() == nil {
+		return
 	}
-
-	return validateDiskPath(cfg.Disk)
-}
-
-// =============================================================
-//  ISO BOOT SELECTION  (not saved to profile — same as shell)
-// =============================================================
-
-func selectISO(cfg *VMConfig) error {
-	if !readYesNo("Boot from ISO?", false) {
-		return nil
-	}
-	fmt.Print("ISO Path: ")
-	path := readLine()
-	if _, err := os.Stat(path); err != nil {
-		return fmt.Errorf("ISO file not found: %s", path)
-	}
-	cfg.ISO = path
-	return nil
+	cmd := exec.Command("pulseaudio", "--start", "--exit-idle-time=-1", "--daemonize=yes")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Run()
 }
 
 // =============================================================
@@ -752,29 +506,34 @@ func detectKVM() bool {
 
 func printSummary(cfg *VMConfig) {
 	fmt.Println("\n===== Launch Summary =====")
-	fmt.Println("  Disk   :", cfg.Disk)
+	fmt.Printf("  Arch   : %s\n", cfg.Arch)
+	fmt.Printf("  Disk   : %s\n", cfg.Disk)
 	fmt.Printf("  RAM    : %d MB  |  CPU: %d cores\n", cfg.RAM, cfg.CPU)
 	fmt.Printf("  SSH    : localhost:%d  →  VM:22\n", cfg.SSHPort)
-	fmt.Println("  Arch   :", cfg.Arch)
 	if cfg.ISO != "" {
-		fmt.Printf("  ISO    : %s  (once=d, single boot)\n", cfg.ISO)
+		fmt.Printf("  ISO    : %s\n", cfg.ISO)
 	}
 	if cfg.UseVNC {
-		fmt.Printf("  VNC    : 127.0.0.1:%d\n", cfg.VNCDisplay)
+		fmt.Printf("  VNC    : 127.0.0.1:%d\n", cfg.VNCPort)
 	}
 	if cfg.UseSPICE {
-		fmt.Printf("  SPICE  : localhost:%d (password protected)\n", cfg.SPICEPort)
+		fmt.Printf("  SPICE  : localhost:%d (password set)\n", cfg.SPICEPort)
 	}
 	if len(cfg.ExtraFwds) > 0 {
 		fmt.Println("  Extra  :")
 		printFwds(cfg.ExtraFwds)
 	}
+	mode := "foreground"
+	if cfg.Daemon {
+		mode = "daemon (background)"
+	}
+	fmt.Printf("  Mode   : %s\n", mode)
 	fmt.Println("==========================")
-	fmt.Println("\nStarting VM...\n")
+	fmt.Println()
 }
 
 // =============================================================
-//  BUILD QEMU ARGS (injection-safe — no shell interpolation)
+//  BUILD QEMU ARGS
 // =============================================================
 
 func buildQemuArgs(cfg *VMConfig, useKVM bool, bios string) []string {
@@ -808,7 +567,6 @@ func buildQemuArgs(cfg *VMConfig, useKVM bool, bios string) []string {
 		args = append(args, "-boot", "order=c")
 	}
 
-	// Network — build as a single netdev string to avoid extra args
 	netArg := fmt.Sprintf("user,id=n1,hostfwd=tcp::%d-:22", cfg.SSHPort)
 	for _, f := range cfg.ExtraFwds {
 		netArg += fmt.Sprintf(",hostfwd=tcp::%d-:%d", f.HostPort, f.GuestPort)
@@ -816,7 +574,10 @@ func buildQemuArgs(cfg *VMConfig, useKVM bool, bios string) []string {
 	args = append(args, "-device", "virtio-net,netdev=n1", "-netdev", netArg)
 
 	if cfg.UseVNC {
-		args = append(args, "-vnc", fmt.Sprintf("127.0.0.1:%d", cfg.VNCDisplay))
+		display := cfg.VNCPort - 5900
+		args = append(args, "-vnc", fmt.Sprintf("127.0.0.1:%d", display))
+	} else {
+		args = append(args, "-display", "none")
 	}
 
 	if cfg.UseSPICE {
@@ -829,34 +590,19 @@ func buildQemuArgs(cfg *VMConfig, useKVM bool, bios string) []string {
 		)
 	}
 
-	// ARM does not support ich9-intel-hda
 	if cfg.Audio && cfg.Arch != "aarch64" {
 		args = append(args,
 			"-audiodev", "pa,id=snd0",
 			"-device", "ich9-intel-hda",
 			"-device", "hda-output,audiodev=snd0",
 		)
+	} else {
+		// Explicitly suppress QEMU's default audio backend so it doesn't
+		// attempt to connect to PulseAudio and print warnings.
+		args = append(args, "-audiodev", "none,id=snd0")
 	}
 
 	return args
-}
-
-// =============================================================
-//  FATAL — cleanup-aware exit (mirrors bash `trap cleanup EXIT`)
-//
-//  os.Exit() bypasses defer, so every fatal path after locks are
-//  acquired must go through die() instead.  This gives us the same
-//  guarantee as bash's EXIT trap: locks are always removed.
-// =============================================================
-
-var activeCfg *VMConfig // set once, used by die() and panicHandler()
-
-func die(format string, args ...any) {
-	fmt.Printf("❌ "+format+"\n", args...)
-	if activeCfg != nil {
-		cleanupLocks(activeCfg)
-	}
-	os.Exit(1)
 }
 
 // =============================================================
@@ -864,41 +610,72 @@ func die(format string, args ...any) {
 // =============================================================
 
 func launchVM(cfg *VMConfig, qemuBin string, args []string) error {
-	pidFile := filepath.Join(lockDir, fmt.Sprintf("qemu_%d.pid", cfg.SSHPort))
-
 	if cfg.Daemon {
-		daemonArgs := append(args, "-daemonize", "-pidfile", pidFile)
-		cmd := exec.Command(qemuBin, daemonArgs...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			// QEMU failed — cleanup is handled by the caller via die()
-			return fmt.Errorf("QEMU launch failed: %w", err)
-		}
-		time.Sleep(time.Second)
+		return launchDaemon(cfg, qemuBin, args)
+	}
+	return launchForeground(cfg, qemuBin, args)
+}
 
-		data, err := os.ReadFile(pidFile)
-		if err != nil {
-			fmt.Println("  ⚠ Warning: pidfile not found:", pidFile)
-			// VM may still be running; do NOT clean up locks — leave them
-			// so a future run detects the conflict correctly.
-			return nil
-		}
-		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-		if err != nil || pid <= 0 {
-			fmt.Println("  ⚠ Warning: could not parse PID from pidfile")
-			return nil
-		}
-		updateLocksWithPID(cfg, pid)
-		fmt.Println("VM started — PID:", pid)
-		// Success: virt-forge exits here; QEMU keeps running as a daemon.
-		// Locks now contain the real QEMU PID — cleanup NOT called on exit.
-		return nil
+// launchDaemon starts QEMU in a new kernel session (Setsid=true) so it
+// survives after the launching terminal (e.g. xterm) closes.
+// QEMU's own -daemonize flag is intentionally avoided — it is absent
+// in several distro builds (notably ARM cross-compiled packages).
+// Stderr is captured to a temp file; if QEMU exits within 800 ms the
+// error is surfaced to the caller instead of being silently swallowed.
+func launchDaemon(cfg *VMConfig, qemuBin string, args []string) error {
+	pidFile := filepath.Join(lockDir, fmt.Sprintf("qemu_%d.pid", cfg.SSHPort))
+	errLog  := filepath.Join(lockDir, fmt.Sprintf("qemu_%d.err", cfg.SSHPort))
+
+	errF, _ := os.Create(errLog)
+
+	cmd := exec.Command(qemuBin, args...)
+	cmd.Stdin  = nil
+	cmd.Stdout = nil
+	cmd.Stderr = errF
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := cmd.Start(); err != nil {
+		errF.Close()
+		os.Remove(errLog)
+		return fmt.Errorf("QEMU launch failed: %w", err)
 	}
 
-	// --------------------------------------------------
-	// Foreground mode
-	// --------------------------------------------------
+	pid := cmd.Process.Pid
+	cmd.Process.Release()
+	errF.Close()
+
+	// Brief wait — lets QEMU initialise or fail fast.
+	time.Sleep(800 * time.Millisecond)
+
+	proc, _ := os.FindProcess(pid)
+	if proc == nil || proc.Signal(syscall.Signal(0)) != nil {
+		errData, _ := os.ReadFile(errLog)
+		os.Remove(errLog)
+		msg := strings.TrimSpace(string(errData))
+		if msg == "" {
+			msg = "(no error output captured)"
+		}
+		return fmt.Errorf("QEMU exited immediately:\n%s", msg)
+	}
+	os.Remove(errLog)
+
+	os.WriteFile(pidFile, []byte(strconv.Itoa(pid)+"\n"), 0644)
+	updateLocksWithPID(cfg, pid)
+
+	fmt.Printf("✅ VM started — PID: %d\n", pid)
+	fmt.Printf("   SSH   : ssh user@localhost -p %d\n", cfg.SSHPort)
+	if cfg.UseSPICE {
+		fmt.Printf("   SPICE : remote-viewer spice://localhost:%d\n", cfg.SPICEPort)
+	}
+	if cfg.UseVNC {
+		fmt.Printf("   VNC   : 127.0.0.1:%d\n", cfg.VNCPort)
+	}
+	return nil
+}
+
+// launchForeground runs QEMU attached to the current terminal.
+// Ctrl-C / SIGTERM is forwarded to QEMU; locks are cleaned up by main's defer.
+func launchForeground(cfg *VMConfig, qemuBin string, args []string) error {
 	cmd := exec.Command(qemuBin, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -921,7 +698,6 @@ func launchVM(cfg *VMConfig, qemuBin string, args []string) error {
 		fmt.Println("\nSignal received — terminating VM...")
 		cmd.Process.Signal(syscall.SIGTERM)
 		<-done
-		// Normal signal exit — cleanupLocks runs via defer in main()
 	case err := <-done:
 		if err != nil {
 			return fmt.Errorf("VM exited with error: %w", err)
@@ -931,260 +707,338 @@ func launchVM(cfg *VMConfig, qemuBin string, args []string) error {
 }
 
 // =============================================================
+//  MINIMAL FLAG PARSER
+//
+//  Supports:  --key value   --key=value   --bool-flag
+//  Boolean flags must be registered with registerBool() before parse().
+// =============================================================
+
+type flagSet struct {
+	args  []string
+	seen  map[string]string
+	bools map[string]bool
+}
+
+func newFlagSet(args []string) *flagSet {
+	return &flagSet{
+		args:  args,
+		seen:  make(map[string]string),
+		bools: make(map[string]bool),
+	}
+}
+
+func (f *flagSet) registerBool(keys ...string) {
+	for _, k := range keys {
+		f.bools[k] = true
+	}
+}
+
+func (f *flagSet) parse() error {
+	i := 0
+	for i < len(f.args) {
+		arg := f.args[i]
+		if !strings.HasPrefix(arg, "--") {
+			i++
+			continue
+		}
+		key := strings.TrimPrefix(arg, "--")
+
+		if idx := strings.IndexByte(key, '='); idx >= 0 {
+			f.seen[key[:idx]] = key[idx+1:]
+			i++
+			continue
+		}
+		if f.bools[key] {
+			f.seen[key] = ""
+			i++
+			continue
+		}
+		if i+1 >= len(f.args) {
+			return fmt.Errorf("flag --%s requires a value", key)
+		}
+		f.seen[key] = f.args[i+1]
+		i += 2
+	}
+	return nil
+}
+
+func (f *flagSet) has(key string) bool       { _, ok := f.seen[key]; return ok }
+func (f *flagSet) str(key, def string) string { if v, ok := f.seen[key]; ok { return v }; return def }
+
+func (f *flagSet) integer(key string, def int) (int, error) {
+	v, ok := f.seen[key]
+	if !ok {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("--%s: '%s' is not a valid integer", key, v)
+	}
+	return n, nil
+}
+
+// =============================================================
 //  MAIN
 // =============================================================
 
 func main() {
-	fmt.Printf("========== VM Manager v%s ==========\n\n", version)
+	for _, a := range os.Args[1:] {
+		if a == "--help" || a == "-h" {
+			fmt.Print(usage)
+			os.Exit(0)
+		}
+	}
 
+	// ── Resolve paths ─────────────────────────────────────────
 	var err error
 	vfRoot, err = resolveRoot()
 	if err != nil {
-		fmt.Println("❌ Failed to resolve project root.")
+		fmt.Fprintln(os.Stderr, "❌ Failed to resolve project root.")
 		os.Exit(1)
 	}
-
 	home, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Println("❌ Failed to determine home directory.")
+		fmt.Fprintln(os.Stderr, "❌ Failed to determine home directory.")
 		os.Exit(1)
 	}
 	configDir = filepath.Join(home, ".vm_profiles")
-	lockDir = filepath.Join(home, ".virt-forge-locks")
+	lockDir   = filepath.Join(home, ".virt-forge-locks")
 
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		fmt.Println("❌ Cannot create config dir:", err)
+	for _, dir := range []string{configDir, lockDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Cannot create directory %s: %v\n", dir, err)
+			os.Exit(1)
+		}
+	}
+
+	// ── Parse flags ───────────────────────────────────────────
+	flags := newFlagSet(os.Args[1:])
+	flags.registerBool("no-vnc", "no-spice", "no-audio", "audio", "fg")
+	if err := flags.parse(); err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		fmt.Fprintln(os.Stderr, "Run with --help for usage.")
 		os.Exit(1)
 	}
-	if err := os.MkdirAll(lockDir, 0755); err != nil {
-		fmt.Println("❌ Cannot create lock dir:", err)
+
+	// ── Load base profile ─────────────────────────────────────
+	profileName := flags.str("profile", "normal")
+	var cfg *VMConfig
+
+	switch profileName {
+	case "normal":
+		cfg = profileNormal()
+	case "lowram":
+		cfg = profileLowRAM()
+	default:
+		if !validateName(profileName) {
+			fmt.Fprintf(os.Stderr, "❌ Invalid profile name: %s\n", profileName)
+			os.Exit(1)
+		}
+		cfg = profileNormal() // sane defaults as base
+		if err := loadSavedProfile(profileName, cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "❌", err)
+			os.Exit(1)
+		}
+		fmt.Printf("  ✔ Loaded profile: %s\n", profileName)
+	}
+
+	// ── Apply flag overrides ───────────────────────────────────
+
+	// --arch
+	if arch := flags.str("arch", ""); arch != "" {
+		if arch != "x86_64" && arch != "aarch64" {
+			fmt.Fprintln(os.Stderr, "❌ --arch must be x86_64 or aarch64")
+			os.Exit(1)
+		}
+		cfg.Arch = arch
+	}
+
+	// --disk (required)
+	disk := flags.str("disk", "")
+	if disk == "" {
+		fmt.Fprintln(os.Stderr, "❌ --disk is required")
+		fmt.Fprintln(os.Stderr, "Run with --help for usage.")
+		os.Exit(1)
+	}
+	if err := validateDiskPath(disk); err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
+	}
+	cfg.Disk = disk
+
+	// --iso
+	if iso := flags.str("iso", ""); iso != "" {
+		if _, err := os.Stat(iso); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ ISO file not found: %s\n", iso)
+			os.Exit(1)
+		}
+		cfg.ISO = iso
+	}
+
+	// --ram
+	if ram, err := flags.integer("ram", cfg.RAM); err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
+	} else {
+		cfg.RAM = ram
+	}
+	if cfg.RAM <= 0 {
+		fmt.Fprintln(os.Stderr, "❌ --ram must be > 0")
 		os.Exit(1)
 	}
 
-	// --------------------------------------------------
-	// Defaults
-	// --------------------------------------------------
-	cfg := &VMConfig{
-		RAM:        4096,
-		CPU:        2,
-		SSHPort:    4444,
-		VNCDisplay: 9,
-		SPICEPort:  5908,
-		Audio:      true,
-		UseVNC:     true,
-		UseSPICE:   true,
-		Daemon:     true,
-		Arch:       "x86_64",
+	// --cpu
+	if cpu, err := flags.integer("cpu", cfg.CPU); err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
+	} else {
+		cfg.CPU = cpu
+	}
+	if cfg.CPU <= 0 {
+		fmt.Fprintln(os.Stderr, "❌ --cpu must be > 0")
+		os.Exit(1)
 	}
 
-	// --------------------------------------------------
-	// Profile selection
-	// --------------------------------------------------
-	fmt.Println("1) Normal Mode  (4 GB RAM, 2 CPU)")
-	fmt.Println("2) Low RAM Mode (2 GB RAM, 1 CPU)")
-	fmt.Println("3) Load Saved Profile")
-	fmt.Print("Select profile [1]: ")
+	// --ssh
+	if ssh, err := flags.integer("ssh", cfg.SSHPort); err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
+	} else if !validatePort(ssh) {
+		fmt.Fprintln(os.Stderr, "❌ --ssh: port out of range (1-65535)")
+		os.Exit(1)
+	} else {
+		cfg.SSHPort = ssh
+	}
 
-	switch mode := readLine(); mode {
-	case "2":
-		cfg.RAM = 2048
-		cfg.CPU = 1
-		cfg.Audio = false
-	case "3":
-		profiles, _ := listProfiles()
-		if len(profiles) == 0 {
-			fmt.Println("  (no profiles found)")
+	// --vnc / --no-vnc
+	if flags.has("no-vnc") {
+		cfg.UseVNC = false
+	} else if vnc, err := flags.integer("vnc", -1); err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
+	} else if vnc >= 0 {
+		if vnc < 5900 || vnc > 65535 {
+			fmt.Fprintln(os.Stderr, "❌ --vnc: port must be >= 5900 (e.g. 5901, 5909)")
+			os.Exit(1)
+		}
+		cfg.VNCPort = vnc
+		cfg.UseVNC = true
+	}
+
+	// --spice / --no-spice / --spice-pass
+	spicePass := flags.str("spice-pass", "")
+	switch {
+	case flags.has("no-spice"):
+		cfg.UseSPICE = false
+		cfg.SpicePass = ""
+
+	case flags.has("spice"):
+		spicePort, err := flags.integer("spice", cfg.SPICEPort)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "❌", err)
+			os.Exit(1)
+		}
+		if !validatePort(spicePort) {
+			fmt.Fprintln(os.Stderr, "❌ --spice: port out of range (1-65535)")
+			os.Exit(1)
+		}
+		if spicePass == "" {
+			fmt.Println("  ⚠ --spice given but --spice-pass is missing — SPICE disabled")
+			cfg.UseSPICE = false
 		} else {
-			fmt.Println("\nAvailable profiles:")
-			for _, p := range profiles {
-				fmt.Println("  -", p)
-			}
-			fmt.Print("Enter profile name: ")
-			name := readLine()
-			if err := validateName(name); err != nil {
-				fmt.Println("❌", err)
-				os.Exit(1)
-			}
-			if err := loadProfile(name, cfg); err != nil {
-				fmt.Println("❌", err)
-				os.Exit(1)
-			}
+			cfg.SPICEPort = spicePort
+			cfg.SpicePass = spicePass
+			cfg.UseSPICE = true
 		}
+
+	case spicePass != "":
+		// --spice-pass without --spice → use default port from profile
+		cfg.SpicePass = spicePass
+		cfg.UseSPICE = true
 	}
 
-	// --------------------------------------------------
-	// Architecture
-	// --------------------------------------------------
-	selectArchitecture(cfg)
+	// --audio / --no-audio
+	if flags.has("audio") {
+		cfg.Audio = true
+	}
+	if flags.has("no-audio") {
+		cfg.Audio = false
+	}
 
-	// --------------------------------------------------
-	// Disk
-	// --------------------------------------------------
-	if err := selectDisk(cfg); err != nil {
-		fmt.Println("❌", err)
+	// --fg
+	if flags.has("fg") {
+		cfg.Daemon = false
+	}
+
+	// --extra-fwds
+	if fwds := flags.str("extra-fwds", ""); fwds != "" {
+		parseExtraFwds(fwds, cfg)
+	}
+
+	// ── ARM guard ─────────────────────────────────────────────
+	if cfg.Arch == "aarch64" && cfg.Audio {
+		fmt.Println("  ⚠ Audio not supported on aarch64 — disabling")
+		cfg.Audio = false
+	}
+
+	// ── Disk existence check ──────────────────────────────────
+	if _, err := os.Stat(cfg.Disk); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Disk file not found: %s\n", cfg.Disk)
 		os.Exit(1)
 	}
 
-	// --------------------------------------------------
-	// Manual configuration
-	// --------------------------------------------------
-	fmt.Println("\n----- Manual Configuration -----")
-	cfg.RAM = readInt("RAM in MB", cfg.RAM)
-	cfg.CPU = readInt("CPU Cores", cfg.CPU)
-
-	// ISO — interactive only, never saved to profile
-	if err := selectISO(cfg); err != nil {
-		fmt.Println("❌", err)
-		os.Exit(1)
-	}
-
-	cfg.Audio = readYesNo("Enable Audio?", cfg.Audio)
-	cfg.UseVNC = readYesNo("Enable VNC?", cfg.UseVNC)
-	cfg.UseSPICE = readYesNo("Enable SPICE?", cfg.UseSPICE)
-	cfg.Daemon = readYesNo("Run in background (daemonize)?", cfg.Daemon)
-
-	cfg.SSHPort = readInt("SSH Forward Port", cfg.SSHPort)
-
-	cfg.VNCDisplay = readInt("VNC Display", cfg.VNCDisplay)
-	if cfg.VNCDisplay > 99 {
-		fmt.Printf("  ⚠ Warning: VNC display %d is unusually high (normal range: 0–99)\n", cfg.VNCDisplay)
-	}
-
-	cfg.SPICEPort = readInt("SPICE Port", cfg.SPICEPort)
-
-	// SPICE password — not saved to profile
-	if cfg.UseSPICE {
-		fmt.Println("\n----- SPICE Authentication -----")
-		pass := readPassword("  SPICE password (Enter for random): ")
-		if pass == "" {
-			pass = generatePassword()
-			fmt.Println("  → Generated SPICE password:", pass)
-			fmt.Println("  ⚠ Note this down — SPICE client will require it.")
-		}
-		cfg.SpicePass = pass
-	}
-
-	// --------------------------------------------------
-	// Extra port forwarding
-	// --------------------------------------------------
-	configureExtraFwds(cfg)
-
-	// --------------------------------------------------
-	// Acquire locks before launching
-	// --------------------------------------------------
-	// Register the defer BEFORE acquireLocks so that Ctrl+C (SIGINT default
-	// handler) between acquireLocks and the `activeCfg = cfg` assignment
-	// cannot leave orphan lock files.  defer runs even when Go's default
-	// SIGINT handler terminates the process via a goroutine panic.
-	// activeCfg starts nil → cleanupLocks is a no-op until we set it below.
-	defer func() { cleanupLocks(activeCfg) }()
-
-	if err := acquireLocks(cfg); err != nil {
-		fmt.Println("❌", err)
-		os.Exit(1) // locks not yet held — plain exit is fine here
-	}
-	// From this point on: use die() for all fatal exits so locks are cleaned up.
-	activeCfg = cfg // defer above now sees a non-nil cfg → will cleanup on exit
-
-	// --------------------------------------------------
-	// Detect QEMU binary
-	// --------------------------------------------------
+	// ── Detect QEMU binary ────────────────────────────────────
 	qemuBin, err := exec.LookPath("qemu-system-" + cfg.Arch)
 	if err != nil {
-		die("qemu-system-%s not found in PATH.\n   Install with: apt install qemu-system (or equivalent)", cfg.Arch)
+		fmt.Fprintf(os.Stderr,
+			"❌ qemu-system-%s not found in PATH\n   Install: apt install qemu-system\n", cfg.Arch)
+		os.Exit(1)
 	}
 	fmt.Println("  ✔ QEMU:", qemuBin)
 
-	// --------------------------------------------------
-	// ARM firmware
-	// --------------------------------------------------
+	// ── ARM firmware ──────────────────────────────────────────
 	bios := ""
 	if cfg.Arch == "aarch64" {
 		bios = detectARMFirmware()
 	}
 
-	// --------------------------------------------------
-	// ARM audio guard
-	// --------------------------------------------------
-	if cfg.Arch == "aarch64" && cfg.Audio {
-		fmt.Println("  ⚠ Audio not supported on ARM — disabling")
-		cfg.Audio = false
-	}
-
-	// --------------------------------------------------
-	// XDG_RUNTIME_DIR — required by QEMU / PulseAudio
-	// Mirrors: export XDG_RUNTIME_DIR="${TMPDIR:-/tmp}" in the bash version
-	// --------------------------------------------------
+	// ── Environment ───────────────────────────────────────────
 	if os.Getenv("XDG_RUNTIME_DIR") == "" {
-		tmpdir := os.Getenv("TMPDIR")
-		if tmpdir == "" {
-			tmpdir = "/tmp"
+		tmp := os.Getenv("TMPDIR")
+		if tmp == "" {
+			tmp = "/tmp"
 		}
-		os.Setenv("XDG_RUNTIME_DIR", tmpdir)
-		fmt.Println("  ℹ XDG_RUNTIME_DIR not set — defaulting to:", tmpdir)
+		os.Setenv("XDG_RUNTIME_DIR", tmp)
+		fmt.Println("  ℹ XDG_RUNTIME_DIR not set — defaulting to:", tmp)
 	}
-	// Unset PULSE_SERVER so QEMU uses the local daemon, not a remote one
 	os.Unsetenv("PULSE_SERVER")
 
-	// --------------------------------------------------
-	// PulseAudio (best-effort, Linux only)
-	// --------------------------------------------------
 	if cfg.Audio {
 		ensurePulseAudio()
 	}
 
-	// --------------------------------------------------
-	// KVM
-	// --------------------------------------------------
 	useKVM := detectKVM()
 
-	// --------------------------------------------------
-	// Disk existence check (final guard before launch)
-	// --------------------------------------------------
-	if _, err := os.Stat(cfg.Disk); err != nil {
-		die("Disk file not found: %s", cfg.Disk)
-	}
+	// ── Acquire locks ─────────────────────────────────────────
+	defer func() { cleanupLocks(activeCfg) }()
 
-	// --------------------------------------------------
-	// Save profile (ISO & SpicePass intentionally excluded)
-	// --------------------------------------------------
-	fmt.Println()
-	if readYesNo("Save this configuration?", false) {
-		var saveName string
-		for {
-			fmt.Print("Profile name: ")
-			saveName = readLine()
-			if err := validateName(saveName); err == nil {
-				break
-			} else {
-				fmt.Println("  !", err)
-			}
-		}
-		if err := saveProfile(saveName, cfg); err != nil {
-			fmt.Println("  ⚠ Could not save profile:", err)
-		} else {
-			fmt.Printf("Profile saved: %s/%s\n", configDir, saveName)
-		}
+	if err := acquireLocks(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
 	}
+	activeCfg = cfg
 
-	// --------------------------------------------------
-	// Summary & launch
-	// --------------------------------------------------
+	// ── Summary & launch ──────────────────────────────────────
 	printSummary(cfg)
 
-	args := buildQemuArgs(cfg, useKVM, bios)
-	if len(args) == 0 {
-		die("Internal error: QEMU args empty")
-	}
+	qemuArgs := buildQemuArgs(cfg, useKVM, bios)
 
-	if err := launchVM(cfg, qemuBin, args); err != nil {
+	if err := launchVM(cfg, qemuBin, qemuArgs); err != nil {
 		die("%s", err)
 	}
 
-	// Daemon mode success: QEMU is running independently.
-	// Suppress the defer cleanupLocks — locks now hold the real QEMU PID
-	// and must persist until QEMU exits.
+	// Daemon success — locks must persist while QEMU runs.
 	if cfg.Daemon {
-		activeCfg = nil // tells defer cleanupLocks() to skip
+		activeCfg = nil
 	}
 }

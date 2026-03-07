@@ -65,15 +65,6 @@ func logEvent(msg string) {
 
 // =============================================================
 //  PROCESS DISCOVERY  (BusyBox-safe fallback chain)
-//
-//  [bash parity] Mirrors get_procs() fallback order:
-//    ps w  →  ps  →  ps aux  →  ps -eo pid,args
-//
-//  Self-exclusion: bash uses the [q]emu-system- bracket trick so
-//  grep itself doesn't appear in the output.  In Go we filter by
-//  checking strings.Contains(line, "qemu-system-") and explicitly
-//  excluding lines that contain the word "grep" — same effect,
-//  no shell required.
 // =============================================================
 
 func runPS(args ...string) (string, error) {
@@ -113,17 +104,6 @@ func getProcs() string {
 
 // =============================================================
 //  FIELD PARSERS
-//
-//  getPID — scans fields for first numeric token, handles both
-//  "PID CMD" and "USER PID %CPU... CMD" (ps aux) layouts.
-//
-//  getCmd — finds the first field containing "/" or "qemu" and
-//  returns from there to EOL.  Fallback: strip leading PID field.
-//
-//  getFullCmd — reads the COMPLETE, untruncated command line from
-//  /proc/<pid>/cmdline (Linux).  ps truncates long argument lists
-//  which breaks hostfwd= and -vnc parsing when QEMU has many args.
-//  Falls back to the ps-derived cmd on non-Linux or read failure.
 // =============================================================
 
 func getPID(line string) string {
@@ -147,27 +127,20 @@ func getCmd(line string) string {
 			return strings.Join(fields[i:], " ")
 		}
 	}
-	// Fallback: strip leading numeric PID field
 	if len(fields) > 1 && isNumeric(fields[0]) {
 		return strings.Join(fields[1:], " ")
 	}
 	return strings.TrimSpace(line)
 }
 
-// getFullCmd reads /proc/<pid>/cmdline — argv stored as NUL-separated
-// bytes, never truncated unlike ps output.
-// Returns (fullCmd, true) on Linux, ("", false) on failure/non-Linux.
 func getFullCmd(pid string) (string, bool) {
 	data, err := os.ReadFile(filepath.Join("/proc", pid, "cmdline"))
 	if err != nil || len(data) == 0 {
 		return "", false
 	}
-	// NUL separators → spaces, matching how ps would render it
 	return strings.TrimSpace(strings.ReplaceAll(string(data), "\x00", " ")), true
 }
 
-// resolveCmd returns the best available command string for a ps line:
-// prefers /proc/<pid>/cmdline (untruncated), falls back to ps-parsed cmd.
 func resolveCmd(line string) string {
 	pid := getPID(line)
 	if pid != "" {
@@ -179,7 +152,7 @@ func resolveCmd(line string) string {
 }
 
 // =============================================================
-//  ARGUMENT EXTRACTION  (compiled once at startup)
+//  ARGUMENT EXTRACTION
 // =============================================================
 
 var (
@@ -189,7 +162,6 @@ var (
 	reRAM       = regexp.MustCompile(`-m\s+([0-9]+)`)
 	reSSH       = regexp.MustCompile(`hostfwd=tcp::([0-9]+)-:22\b`)
 	reAllFwd    = regexp.MustCompile(`hostfwd=tcp::([0-9]+)-:([0-9]+)`)
-	reVNC       = regexp.MustCompile(`-vnc\s+(\S+)`)
 	reVNCDisp   = regexp.MustCompile(`-vnc\s+127\.0\.0\.1:([0-9]+)`)
 	reSpiceBlk  = regexp.MustCompile(`-spice\s+(\S+)`)
 	reSpicePort = regexp.MustCompile(`\bport=([0-9]+)`)
@@ -202,7 +174,6 @@ func getArch(cmd string) string {
 	return ""
 }
 
-// getDisk — tries -drive file= first, then legacy -hda
 func getDisk(cmd string) string {
 	if m := reDrive.FindStringSubmatch(cmd); len(m) > 1 {
 		return m[1]
@@ -227,7 +198,6 @@ func getSSHPort(cmd string) string {
 	return ""
 }
 
-// getExtraPorts — host-side ports for all hostfwd rules whose guest port != 22
 func getExtraPorts(cmd string) []string {
 	var ports []string
 	for _, m := range reAllFwd.FindAllStringSubmatch(cmd, -1) {
@@ -238,24 +208,20 @@ func getExtraPorts(cmd string) []string {
 	return ports
 }
 
-func getVNC(cmd string) string {
-	if m := reVNC.FindStringSubmatch(cmd); len(m) > 1 {
-		return m[1]
-	}
-	return ""
-}
-
-// getVNCDisplay — extracts the bare display number from -vnc 127.0.0.1:N
-// for lock filenames (vnc_N.lock).
-func getVNCDisplay(cmd string) string {
+// getVNCPort extracts the VNC display number from QEMU args and converts
+// it to a user-facing port (display N → port 5900+N).
+// Lock files use this port: vnc_5909.lock, matching qemu-run's convention.
+func getVNCPort(cmd string) string {
 	if m := reVNCDisp.FindStringSubmatch(cmd); len(m) > 1 {
-		return m[1]
+		display, err := strconv.Atoi(m[1])
+		if err != nil {
+			return ""
+		}
+		return strconv.Itoa(5900 + display)
 	}
 	return ""
 }
 
-// getSpicePort — grabs the -spice argument block first, then port= within it.
-// Required because -spice and port= are space-separated in QEMU args.
 func getSpicePort(cmd string) string {
 	if blk := reSpiceBlk.FindStringSubmatch(cmd); len(blk) > 1 {
 		if m := reSpicePort.FindStringSubmatch(blk[1]); len(m) > 1 {
@@ -282,8 +248,8 @@ func parseInfo(cmd string) {
 	if v := getSSHPort(cmd); v != "" {
 		fmt.Println("    SSH       : localhost:" + v)
 	}
-	if v := getVNC(cmd); v != "" {
-		fmt.Println("    VNC       :", v)
+	if v := getVNCPort(cmd); v != "" {
+		fmt.Println("    VNC       : 127.0.0.1:" + v)
 	}
 	if v := getSpicePort(cmd); v != "" {
 		fmt.Println("    SPICE     : localhost:" + v)
@@ -314,13 +280,14 @@ func pidAlive(pidStr string) bool {
 }
 
 // removeLocksFor removes all lock files associated with a QEMU command line.
+// VNC lock uses port (vnc_5909.lock), matching qemu-run's convention.
 func removeLocksFor(cmd string) {
 	if ssh := getSSHPort(cmd); ssh != "" {
 		os.Remove(filepath.Join(lockDir, "ssh_"+ssh+".lock"))
 		os.Remove(filepath.Join(lockDir, "qemu_"+ssh+".pid"))
 	}
-	if d := getVNCDisplay(cmd); d != "" {
-		os.Remove(filepath.Join(lockDir, "vnc_"+d+".lock"))
+	if port := getVNCPort(cmd); port != "" {
+		os.Remove(filepath.Join(lockDir, "vnc_"+port+".lock"))
 	}
 	if sp := getSpicePort(cmd); sp != "" {
 		os.Remove(filepath.Join(lockDir, "spice_"+sp+".lock"))
@@ -331,8 +298,6 @@ func removeLocksFor(cmd string) {
 }
 
 // scanStaleOrphans scans lockDir for lock files whose PID is dead.
-// These are leftover from crashed/killed virt-forge sessions where
-// cleanup was skipped. Reports them but does not remove automatically.
 func scanStaleOrphans(activePorts map[string]bool) {
 	entries, err := os.ReadDir(lockDir)
 	if err != nil {
@@ -340,19 +305,12 @@ func scanStaleOrphans(activePorts map[string]bool) {
 	}
 	for _, e := range entries {
 		name := e.Name()
-		// Only look at .lock files not belonging to any running VM
 		if !strings.HasSuffix(name, ".lock") {
 			continue
 		}
-		// Strip prefix and suffix to get the port/display value
-		port := strings.TrimSuffix(name, ".lock")
-		for _, pfx := range []string{"ssh_", "vnc_", "spice_", "extra_"} {
-			port = strings.TrimPrefix(port, pfx)
-		}
 		if activePorts[name] {
-			continue // belongs to a running VM — already shown
+			continue
 		}
-		// Check if the PID inside is still alive
 		data, _ := os.ReadFile(filepath.Join(lockDir, name))
 		pidStr := strings.TrimSpace(string(data))
 		if pidStr == "" || pidStr == "0" || !pidAlive(pidStr) {
@@ -362,13 +320,10 @@ func scanStaleOrphans(activePorts map[string]bool) {
 	}
 }
 
-// showLocks displays which lock files exist for a running VM,
-// validates pidfile liveness, and warns about stale orphan locks
-// left over from previous sessions.
+// showLocks displays lock file status for a running VM.
+// VNC lock uses port (vnc_5909.lock), matching qemu-run's convention.
 func showLocks(cmd string) {
 	lockInfo := ""
-	// activePorts tracks lock filenames that belong to this VM
-	// so scanStaleOrphans can skip them.
 	activePorts := map[string]bool{}
 
 	if ssh := getSSHPort(cmd); ssh != "" {
@@ -378,11 +333,11 @@ func showLocks(cmd string) {
 			lockInfo += " ssh:" + ssh
 		}
 	}
-	if d := getVNCDisplay(cmd); d != "" {
-		name := "vnc_" + d + ".lock"
+	if port := getVNCPort(cmd); port != "" {
+		name := "vnc_" + port + ".lock"
 		activePorts[name] = true
 		if fileExists(filepath.Join(lockDir, name)) {
-			lockInfo += " vnc:" + d
+			lockInfo += " vnc:" + port
 		}
 	}
 	if sp := getSpicePort(cmd); sp != "" {
@@ -406,7 +361,6 @@ func showLocks(cmd string) {
 		fmt.Println("    Locks     :" + lockInfo)
 	}
 
-	// PIDFile check
 	if ssh := getSSHPort(cmd); ssh != "" {
 		pf := filepath.Join(lockDir, "qemu_"+ssh+".pid")
 		if fileExists(pf) {
@@ -423,7 +377,6 @@ func showLocks(cmd string) {
 		}
 	}
 
-	// Warn about orphan locks from previous sessions
 	scanStaleOrphans(activePorts)
 }
 
@@ -462,7 +415,7 @@ func cmdList() {
 
 	for i, line := range strings.Split(procs, "\n") {
 		pid := getPID(line)
-		cmd := resolveCmd(line) // uses /proc if available
+		cmd := resolveCmd(line)
 		fmt.Printf("  [%d] PID: %s\n", i+1, pid)
 		parseInfo(cmd)
 		fmt.Println()
@@ -484,7 +437,7 @@ func cmdStatus() {
 
 	for _, line := range strings.Split(procs, "\n") {
 		pid := getPID(line)
-		cmd := resolveCmd(line) // uses /proc if available
+		cmd := resolveCmd(line)
 
 		status := "✘ Not responding"
 		if pidAlive(pid) {
@@ -521,7 +474,6 @@ func cmdStop() {
 	}
 
 	lines := strings.Split(procs, "\n")
-	// Resolve full cmds once — used for both display and lock removal
 	cmds := make([]string, len(lines))
 	for i, line := range lines {
 		cmds[i] = resolveCmd(line)
@@ -596,6 +548,53 @@ func cmdStop() {
 }
 
 // =============================================================
+//  COMMAND: DEBUG
+// =============================================================
+
+func cmdDebug() {
+	fmt.Println("\n====== Debug ======\n")
+	fmt.Printf("  lockDir : %s\n", lockDir)
+	fmt.Printf("  logFile : %s\n\n", logFile)
+
+	entries, err := os.ReadDir(lockDir)
+	if err != nil {
+		fmt.Println("  lockDir read error:", err)
+	} else if len(entries) == 0 {
+		fmt.Println("  (no files in lockDir)")
+	} else {
+		fmt.Println("  Lock files present:")
+		for _, e := range entries {
+			fmt.Println("    ", e.Name())
+		}
+	}
+	fmt.Println()
+
+	procs := strings.TrimSpace(getProcs())
+	if procs == "" {
+		fmt.Println("  No running VMs found by getProcs().")
+		return
+	}
+
+	for i, line := range strings.Split(procs, "\n") {
+		pid := getPID(line)
+		fmt.Printf("  --- VM %d  PID=%s ---\n", i+1, pid)
+		fmt.Printf("  ps cmd (truncated): %s\n\n", getCmd(line))
+
+		if full, ok := getFullCmd(pid); ok {
+			fmt.Printf("  /proc cmd (full)  : %s\n\n", full)
+			fmt.Printf("  getSSHPort  : %q\n", getSSHPort(full))
+			fmt.Printf("  getVNCPort  : %q\n", getVNCPort(full))
+			fmt.Printf("  getSpicePort: %q\n", getSpicePort(full))
+			fmt.Printf("  getExtraPorts: %v\n", getExtraPorts(full))
+		} else {
+			fmt.Println("  /proc read FAILED — falling back to ps cmd")
+			fmt.Printf("  getSSHPort  : %q\n", getSSHPort(getCmd(line)))
+		}
+		fmt.Println()
+	}
+}
+
+// =============================================================
 //  MAIN
 // =============================================================
 
@@ -629,50 +628,6 @@ func printUsage() {
 	fmt.Println("  list    — list all running VMs (arch + ports)")
 	fmt.Println("  status  — show PID, lock, pidfile info + log")
 	fmt.Println("  stop    — stop a single or all VMs")
+	fmt.Println("  debug   — raw parsed fields + lock dir contents")
 	fmt.Println()
-}
-
-// cmdDebug prints raw parsed fields and lock dir contents to diagnose
-// lock detection issues without modifying any state.
-func cmdDebug() {
-	fmt.Println("\n====== Debug ======\n")
-	fmt.Printf("  lockDir : %s\n", lockDir)
-	fmt.Printf("  logFile : %s\n\n", logFile)
-
-	entries, err := os.ReadDir(lockDir)
-	if err != nil {
-		fmt.Println("  lockDir read error:", err)
-	} else if len(entries) == 0 {
-		fmt.Println("  (no files in lockDir)")
-	} else {
-		fmt.Println("  Lock files present:")
-		for _, e := range entries {
-			fmt.Println("    ", e.Name())
-		}
-	}
-	fmt.Println()
-
-	procs := strings.TrimSpace(getProcs())
-	if procs == "" {
-		fmt.Println("  No running VMs found by getProcs().")
-		return
-	}
-
-	for i, line := range strings.Split(procs, "\n") {
-		pid := getPID(line)
-		fmt.Printf("  --- VM %d  PID=%s ---\n", i+1, pid)
-		fmt.Printf("  ps cmd (truncated): %s\n\n", getCmd(line))
-
-		if full, ok := getFullCmd(pid); ok {
-			fmt.Printf("  /proc cmd (full)  : %s\n\n", full)
-			fmt.Printf("  getSSHPort   : %q\n", getSSHPort(full))
-			fmt.Printf("  getVNCDisplay: %q\n", getVNCDisplay(full))
-			fmt.Printf("  getSpicePort : %q\n", getSpicePort(full))
-			fmt.Printf("  getExtraPorts: %v\n", getExtraPorts(full))
-		} else {
-			fmt.Println("  /proc read FAILED — falling back to ps cmd")
-			fmt.Printf("  getSSHPort   : %q\n", getSSHPort(getCmd(line)))
-		}
-		fmt.Println()
-	}
 }
