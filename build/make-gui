@@ -30,6 +30,8 @@ if [ ! -f "$GUI_SRC" ]; then
     exit 1
 fi
 
+
+
 # ── Build ─────────────────────────────────────────────────────
 printf '🔨 Building GUI (PyInstaller one-dir)...\n'
 
@@ -56,8 +58,8 @@ python3 -m PyInstaller \
 #   bin/virt-forge      ← executable
 #   bin/_internal/      ← libs beside the binary
 #
-rm -f  "$BIN/virt-forge"
-rm -rf "$BIN/_internal"
+rm -f  "$ROOT/virt-forge"
+rm -rf "$ROOT/_internal"
 mv "$DIST_DIR/virt-forge/virt-forge"  "$ROOT/virt-forge"
 mv "$DIST_DIR/virt-forge/_internal"   "$ROOT/_internal"
 

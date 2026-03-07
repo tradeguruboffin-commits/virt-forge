@@ -778,9 +778,15 @@ class ControlTab(QWidget):
                     uptime_str = ""
 
                 # Build display string
+                disk_name = ""
+                if "disk" in fields:
+                    disk_name = Path(fields["disk"]).name
+
                 parts = [f"[{vm_idx}]  PID {pid}"]
                 if uptime_str:
                     parts.append(f"up {uptime_str}")
+                if disk_name:
+                    parts.append(disk_name)
                 if "arch" in fields:
                     parts.append(fields["arch"])
                 if "ssh" in fields:
