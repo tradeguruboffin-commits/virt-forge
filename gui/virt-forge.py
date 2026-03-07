@@ -170,7 +170,7 @@ class Console(QTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
-        self.setFont(QFont("Monospace", 14))
+        self.setFont(QFont("Monospace", 17))
         self.setStyleSheet("""
             QTextEdit {
                 background: #0d1117;
@@ -989,7 +989,7 @@ class VirtForge(QMainWindow):
             background-color: #0d1117;
             color: #e6edf3;
             font-family: 'DejaVu Sans', 'Liberation Sans', sans-serif;
-            font-size: 20px;
+            font-size: 22px;
         }
         QTabWidget::pane {
             border: 1px solid #30363d;
@@ -1001,6 +1001,7 @@ class VirtForge(QMainWindow):
             padding: 16px 36px;
             border: 1px solid #30363d;
             border-bottom: none;
+            font-size: 22px;
         }
         QTabBar::tab:selected {
             background: #0d1117;
@@ -1010,9 +1011,10 @@ class VirtForge(QMainWindow):
         QGroupBox {
             border: 1px solid #30363d;
             border-radius: 12px;
-            margin-top: 10px;
-            padding-top: 12px;
+            margin-top: 12px;
+            padding-top: 14px;
             font-weight: bold;
+            font-size: 22px;
             color: #8b949e;
         }
         QGroupBox::title {
@@ -1023,10 +1025,10 @@ class VirtForge(QMainWindow):
             background: #161b22;
             border: 1px solid #30363d;
             border-radius: 8px;
-            padding: 8px 12px;
+            padding: 10px 14px;
             color: #e6edf3;
-            min-height: 36px;
-            font-size: 20px;
+            min-height: 42px;
+            font-size: 22px;
         }
         QSpinBox::up-button, QSpinBox::down-button { width: 24px; }
         QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
@@ -1036,8 +1038,9 @@ class VirtForge(QMainWindow):
             background: #21262d;
             border: 1px solid #30363d;
             border-radius: 8px;
-            padding: 10px 24px;
+            padding: 12px 28px;
             color: #e6edf3;
+            font-size: 22px;
         }
         QPushButton:hover   { background: #30363d; border-color: #58a6ff; }
         QPushButton:pressed { background: #161b22; }
@@ -1046,6 +1049,10 @@ class VirtForge(QMainWindow):
             border: 1px solid #30363d;
             border-radius: 8px;
             alternate-background-color: #0d1117;
+            font-size: 22px;
+        }
+        QListWidget::item {
+            padding: 8px 4px;
         }
         QListWidget::item:selected {
             background: #1f3f6a;
@@ -1061,7 +1068,7 @@ class VirtForge(QMainWindow):
             border-radius: 8px;
         }
         QCheckBox::indicator {
-            width: 28px; height: 28px;
+            width: 32px; height: 32px;
             border: 1px solid #30363d;
             border-radius: 6px;
             background: #161b22;
@@ -1070,7 +1077,7 @@ class VirtForge(QMainWindow):
             background: #238636;
             border-color: #2ea043;
         }
-        QStatusBar { color: #8b949e; font-size: 15px; }
+        QStatusBar { color: #8b949e; font-size: 18px; }
         QScrollArea { border: none; background: transparent; }
         """
 
