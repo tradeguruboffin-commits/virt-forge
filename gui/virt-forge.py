@@ -612,9 +612,10 @@ class VMTab(QWidget):
         self.console.clear_and_print("$ " + " ".join(args))
         self.launch_btn.setEnabled(False)
 
-        # daemon mode: qemu-run exits in ~1s after starting QEMU
+        # daemon mode: qemu-run exits quickly after starting QEMU.
+        # Audio adds init time — use 15s to be safe.
         # foreground mode: runs until VM stops — no timeout
-        timeout = 5 if self.daemon_check.isChecked() else None
+        timeout = 15 if self.daemon_check.isChecked() else None
         w = Worker(args, timeout=timeout)
         self._workers.append(w)
         w.finished.connect(self._on_launch_done)
@@ -712,13 +713,95 @@ class ControlTab(QWidget):
             self._run(cmd, on_done=self._update_list)
 
     def _update_list(self, stdout, stderr):
+        """
+        Parse qemu-ctl list output and show each VM as a rich list item:
+          [1] PID: 12345  |  SSH: 4444  |  VNC: 5909  |  Arch: x86_64
+        qemu-ctl list format (indented under [N] PID: X line):
+          Arch      : x86_64
+          Disk      : /path/to/disk.qcow2
+          RAM       : 4096 MB
+          SSH       : localhost:4444
+          VNC       : 127.0.0.1:5909
+          SPICE     : localhost:5910
+          Extra Ports: ...
+        """
+        import re
+
         self.vm_list.clear()
-        for line in stdout.splitlines():
+        self._vm_pids = []   # parallel list: pid string per list row
+
+        lines = stdout.splitlines()
+        i = 0
+        vm_idx = 0
+        while i < len(lines):
+            line = lines[i]
             stripped = line.strip()
-            if stripped.startswith("["):
-                self.vm_list.addItem(QListWidgetItem(stripped))
+            # Header line: [1] PID: 12345
+            pid_m = re.match(r'\[(\d+)\]\s+PID:\s+(\d+)', stripped)
+            if pid_m:
+                vm_idx += 1
+                pid = pid_m.group(2)
+                # Collect fields from indented lines below
+                fields = {}
+                j = i + 1
+                while j < len(lines):
+                    sub = lines[j].strip()
+                    if sub.startswith("[") or sub == "":
+                        break
+                    if ":" in sub:
+                        key, _, val = sub.partition(":")
+                        fields[key.strip().lower()] = val.strip()
+                    j += 1
+                i = j
+
+                # Uptime: use the PID file mtime as the VM start time.
+                # qemu-run writes ~/.virt-forge-locks/qemu_<sshport>.pid
+                # at launch — its mtime is a reliable wall-clock start time.
+                uptime_str = ""
+                try:
+                    import time as _time, os as _os
+                    ssh_port = ""
+                    if "ssh" in fields:
+                        ssh_port = fields["ssh"].replace("localhost:", "").strip()
+                    lock_dir = Path.home() / ".virt-forge-locks"
+                    pid_file = lock_dir / f"qemu_{ssh_port}.pid" if ssh_port else None
+                    if pid_file and pid_file.exists():
+                        age = _time.time() - pid_file.stat().st_mtime
+                        age = max(0, age)
+                        if age >= 3600:
+                            uptime_str = f"{int(age//3600)}h {int((age%3600)//60)}m"
+                        elif age >= 60:
+                            uptime_str = f"{int(age//60)}m {int(age%60)}s"
+                        else:
+                            uptime_str = f"{int(age)}s"
+                except Exception:
+                    uptime_str = ""
+
+                # Build display string
+                parts = [f"[{vm_idx}]  PID {pid}"]
+                if uptime_str:
+                    parts.append(f"up {uptime_str}")
+                if "arch" in fields:
+                    parts.append(fields["arch"])
+                if "ssh" in fields:
+                    parts.append(f"SSH {fields['ssh'].replace('localhost:', '')}")
+                if "vnc" in fields:
+                    port = fields["vnc"].split(":")[-1]
+                    parts.append(f"VNC :{port}")
+                if "spice" in fields:
+                    port = fields["spice"].split(":")[-1]
+                    parts.append(f"SPICE :{port}")
+
+                display = "   │   ".join(parts)
+                item = QListWidgetItem(display)
+                self.vm_list.addItem(item)
+                self._vm_pids.append(pid)
+                continue
+            i += 1
+
         if self.vm_list.count() == 0:
             self.vm_list.addItem("(no running VMs)")
+            self._vm_pids = []
 
     def show_status(self):
         cmd = self._ctl("status")
@@ -786,7 +869,7 @@ class DiskTab(QWidget):
             b.setStyleSheet(f"""
                 QPushButton {{
                     background: {bg};
-                    font-size: 18px;
+                    font-size: 20px;
                     border-radius: 8px;
                 }}
                 QPushButton:hover {{ background: {hover}; }}
@@ -878,8 +961,8 @@ class VirtForge(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Virt-Forge  —  QEMU Control Panel")
-        self.resize(1100, 820)
-        self.setMinimumSize(900, 680)
+        self.resize(1400, 900)
+        self.setMinimumSize(1100, 720)
         self.setStyleSheet(self._theme())
 
         tabs = QTabWidget()
@@ -906,7 +989,7 @@ class VirtForge(QMainWindow):
             background-color: #0d1117;
             color: #e6edf3;
             font-family: 'DejaVu Sans', 'Liberation Sans', sans-serif;
-            font-size: 18px;
+            font-size: 20px;
         }
         QTabWidget::pane {
             border: 1px solid #30363d;
@@ -943,7 +1026,7 @@ class VirtForge(QMainWindow):
             padding: 8px 12px;
             color: #e6edf3;
             min-height: 36px;
-            font-size: 18px;
+            font-size: 20px;
         }
         QSpinBox::up-button, QSpinBox::down-button { width: 24px; }
         QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
