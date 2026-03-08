@@ -93,7 +93,7 @@ do_install() {
 [Desktop Entry]
 Version=1.1
 Type=Application
-Name=Virt-Forge
+Name=Virt Forge
 GenericName=QEMU Control Panel
 Comment=Manage and launch QEMU virtual machines
 Exec=$BINARY
