@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -62,6 +63,18 @@ Audio:
 Mode:
   --fg                   Run in foreground (default: background daemon)
 
+Snapshot:
+  --snapshot <n>         Boot into a saved internal snapshot
+
+Live Migration:
+  --incoming <addr>      Wait for incoming migration (System B / destination)
+                         Format: tcp:0:<port>  (e.g. tcp:0:5555)
+  --monitor  <port>      Expose QEMU monitor on localhost:<port> via TCP
+                         Use with telnet to trigger migration manually
+  --migrate  <ip:port>   Send this VM to destination (System A / source)
+                         Automatically opens monitor, triggers migrate,
+                         polls until complete, then quits QEMU
+
 Other:
   --help                 Show this help
 
@@ -80,6 +93,17 @@ Examples:
   # Load saved profile, override RAM, add extra ports
   qemu-run --profile myvm --disk ~/vms/dev.qcow2 \
            --ram 8192 --extra-fwds 8080:8080,5432:5432
+
+  # Live migration — System B (destination, waits for VM)
+  qemu-run --disk vm.qcow2 --incoming tcp:0:5555
+
+  # Live migration — System A (source, automatic)
+  qemu-run --disk vm.qcow2 --migrate 192.168.43.105:5555
+
+  # Live migration — System A (source, manual monitor)
+  qemu-run --disk vm.qcow2 --monitor 4445
+  # then: telnet localhost 4445
+  #       (qemu) migrate tcp:192.168.1.x:5555
 `
 
 // =============================================================
@@ -96,6 +120,10 @@ type VMConfig struct {
 	Disk       string
 	ISO        string // not saved to profile
 	SpicePass  string // not saved to profile
+	Snapshot   string // not saved to profile — boot into specific snapshot
+	Incoming    string // not saved to profile — live migration destination URI
+	MonitorPort int    // not saved to profile — QEMU monitor TCP port (0 = off)
+	MigrateTo   string // not saved to profile — "ip:port" to migrate TO (send side)
 	RAM        int
 	CPU        int
 	SSHPort    int
@@ -511,7 +539,10 @@ func printSummary(cfg *VMConfig) {
 	fmt.Printf("  RAM    : %d MB  |  CPU: %d cores\n", cfg.RAM, cfg.CPU)
 	fmt.Printf("  SSH    : localhost:%d  →  VM:22\n", cfg.SSHPort)
 	if cfg.ISO != "" {
-		fmt.Printf("  ISO    : %s\n", cfg.ISO)
+		fmt.Printf("  ISO      : %s\n", cfg.ISO)
+	}
+	if cfg.Snapshot != "" {
+		fmt.Printf("  Snapshot : %s\n", cfg.Snapshot)
 	}
 	if cfg.UseVNC {
 		fmt.Printf("  VNC    : 127.0.0.1:%d\n", cfg.VNCPort)
@@ -522,6 +553,16 @@ func printSummary(cfg *VMConfig) {
 	if len(cfg.ExtraFwds) > 0 {
 		fmt.Println("  Extra  :")
 		printFwds(cfg.ExtraFwds)
+	}
+	if cfg.MonitorPort > 0 {
+		fmt.Printf("  Monitor  : tcp:127.0.0.1:%d  (telnet localhost %d)\n",
+			cfg.MonitorPort, cfg.MonitorPort)
+	}
+	if cfg.Incoming != "" {
+		fmt.Printf("  Incoming : %s  (waiting for source VM…)\n", cfg.Incoming)
+	}
+	if cfg.MigrateTo != "" {
+		fmt.Printf("  Migrate  : → %s  (will auto-send after boot)\n", cfg.MigrateTo)
 	}
 	mode := "foreground"
 	if cfg.Daemon {
@@ -554,12 +595,24 @@ func buildQemuArgs(cfg *VMConfig, useKVM bool, bios string) []string {
 		args = append(args, "-accel", "tcg,tb-size=2048")
 	}
 
-	args = append(args,
-		"-rtc", "base=localtime",
-		"-m", strconv.Itoa(cfg.RAM),
-		"-smp", strconv.Itoa(cfg.CPU),
-		"-drive", fmt.Sprintf("file=%s,if=virtio,format=qcow2", cfg.Disk),
-	)
+	// If a snapshot is requested, pass it as a loadvm arg.
+	// QEMU loads the snapshot state at boot instead of fresh disk.
+	if cfg.Snapshot != "" {
+		args = append(args,
+			"-rtc", "base=localtime",
+			"-m", strconv.Itoa(cfg.RAM),
+			"-smp", strconv.Itoa(cfg.CPU),
+			"-drive", fmt.Sprintf("file=%s,if=virtio,format=qcow2", cfg.Disk),
+			"-loadvm", cfg.Snapshot,
+		)
+	} else {
+		args = append(args,
+			"-rtc", "base=localtime",
+			"-m", strconv.Itoa(cfg.RAM),
+			"-smp", strconv.Itoa(cfg.CPU),
+			"-drive", fmt.Sprintf("file=%s,if=virtio,format=qcow2", cfg.Disk),
+		)
+	}
 
 	if cfg.ISO != "" {
 		args = append(args, "-cdrom", cfg.ISO, "-boot", "order=d,once=d,menu=on")
@@ -600,6 +653,19 @@ func buildQemuArgs(cfg *VMConfig, useKVM bool, bios string) []string {
 		// Explicitly suppress QEMU's default audio backend so it doesn't
 		// attempt to connect to PulseAudio and print warnings.
 		args = append(args, "-audiodev", "none,id=snd0")
+	}
+
+	// QEMU monitor over TCP — lets the user run "migrate ..." via telnet.
+	if cfg.MonitorPort > 0 {
+		args = append(args,
+			"-monitor",
+			fmt.Sprintf("tcp:127.0.0.1:%d,server,nowait", cfg.MonitorPort),
+		)
+	}
+
+	// Incoming live migration — QEMU pauses and waits for the source VM.
+	if cfg.Incoming != "" {
+		args = append(args, "-incoming", cfg.Incoming)
 	}
 
 	return args
@@ -704,6 +770,105 @@ func launchForeground(cfg *VMConfig, qemuBin string, args []string) error {
 		}
 	}
 	return nil
+}
+
+
+// =============================================================
+//  LIVE MIGRATION — SEND SIDE
+// =============================================================
+
+// runMigration launches QEMU with an internal monitor, waits for it to be
+// ready, sends "migrate tcp:<dest>", polls migration status until complete
+// (or failed), then sends "quit".  All monitor I/O is done over a loopback
+// TCP connection to avoid a shell dependency on expect/telnet.
+func runMigration(cfg *VMConfig, qemuBin string, args []string, dest string) error {
+	// Pick an ephemeral loopback monitor port.
+	monPort := 14450
+	args = append(args,
+		"-monitor",
+		fmt.Sprintf("tcp:127.0.0.1:%d,server,nowait", monPort),
+	)
+
+	cmd := exec.Command(qemuBin, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("QEMU launch failed: %w", err)
+	}
+	pid := cmd.Process.Pid
+	updateLocksWithPID(cfg, pid)
+	fmt.Printf("  VM started (PID %d) — waiting for monitor on :%d…\n", pid, monPort)
+
+	// Wait up to 10 s for the monitor TCP port to open.
+	var conn net.Conn
+	var connErr error
+	for i := 0; i < 100; i++ {
+		time.Sleep(100 * time.Millisecond)
+		conn, connErr = net.DialTimeout("tcp",
+			fmt.Sprintf("127.0.0.1:%d", monPort), time.Second)
+		if connErr == nil {
+			break
+		}
+	}
+	if connErr != nil {
+		cmd.Process.Kill()
+		return fmt.Errorf("monitor did not open: %w", connErr)
+	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+
+	// Drain the QEMU banner line (e.g. "QEMU 8.x.x monitor - type 'help' …")
+	monRecv := func() string {
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		line, _ := reader.ReadString('\n')
+		return strings.TrimSpace(line)
+	}
+	monSend := func(cmd string) {
+		conn.Write([]byte(cmd + "\n"))
+	}
+
+	banner := monRecv()
+	fmt.Println("  Monitor:", banner)
+
+	// Send migrate command.
+	migrateURI := fmt.Sprintf("tcp:%s", dest)
+	fmt.Printf("  Sending: migrate %s\n", migrateURI)
+	monSend("migrate " + migrateURI)
+	monRecv() // consume prompt echo
+
+	// Poll migration status every second.
+	fmt.Println("  Migration in progress…")
+	for {
+		time.Sleep(time.Second)
+		monSend("info migrate")
+		// Read lines until we get one with "status:" or timeout
+		var statusLine string
+		for j := 0; j < 20; j++ {
+			line := monRecv()
+			if strings.Contains(line, "status:") {
+				statusLine = line
+				break
+			}
+		}
+		if statusLine == "" {
+			fmt.Println("  ⚠ Could not read migration status — continuing…")
+			continue
+		}
+		fmt.Println(" ", statusLine)
+
+		if strings.Contains(statusLine, "completed") {
+			fmt.Println("✅ Migration complete — source VM shutting down.")
+			monSend("quit")
+			cmd.Wait()
+			return nil
+		}
+		if strings.Contains(statusLine, "failed") || strings.Contains(statusLine, "cancelled") {
+			monSend("quit")
+			cmd.Wait()
+			return fmt.Errorf("migration failed: %s", statusLine)
+		}
+	}
 }
 
 // =============================================================
@@ -975,6 +1140,54 @@ func main() {
 		parseExtraFwds(fwds, cfg)
 	}
 
+	// --snapshot
+	if snap := flags.str("snapshot", ""); snap != "" {
+		cfg.Snapshot = snap
+	}
+
+	// --monitor
+	if mon, err := flags.integer("monitor", 0); err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
+	} else if mon > 0 {
+		if !validatePort(mon) {
+			fmt.Fprintln(os.Stderr, "❌ --monitor: port out of range (1-65535)")
+			os.Exit(1)
+		}
+		cfg.MonitorPort = mon
+	}
+
+	// --incoming
+	if incoming := flags.str("incoming", ""); incoming != "" {
+		// basic format check: must look like tcp:addr:port
+		parts := strings.SplitN(incoming, ":", 3)
+		if len(parts) != 3 || parts[0] != "tcp" {
+			fmt.Fprintln(os.Stderr, "❌ --incoming: expected format tcp:<addr>:<port>  e.g. tcp:0:5555")
+			os.Exit(1)
+		}
+		cfg.Incoming = incoming
+		// incoming VMs run in foreground so we can see the migration complete
+		cfg.Daemon = false
+	}
+
+	// --migrate ip:port
+	if migTo := flags.str("migrate", ""); migTo != "" {
+		// validate format: must contain exactly one colon (ip:port or host:port)
+		parts := strings.SplitN(migTo, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			fmt.Fprintln(os.Stderr, "❌ --migrate: expected format <ip>:<port>  e.g. 192.168.43.105:5555")
+			os.Exit(1)
+		}
+		cfg.MigrateTo = migTo
+		// send side always runs in foreground (we need to poll the monitor)
+		cfg.Daemon = false
+		// ensure no --incoming conflict
+		if cfg.Incoming != "" {
+			fmt.Fprintln(os.Stderr, "❌ --migrate and --incoming cannot be used together")
+			os.Exit(1)
+		}
+	}
+
 	// ── ARM guard ─────────────────────────────────────────────
 	if cfg.Arch == "aarch64" && cfg.Audio {
 		fmt.Println("  ⚠ Audio not supported on aarch64 — disabling")
@@ -1033,8 +1246,14 @@ func main() {
 
 	qemuArgs := buildQemuArgs(cfg, useKVM, bios)
 
-	if err := launchVM(cfg, qemuBin, qemuArgs); err != nil {
-		die("%s", err)
+	if cfg.MigrateTo != "" {
+		if err := runMigration(cfg, qemuBin, qemuArgs, cfg.MigrateTo); err != nil {
+			die("%s", err)
+		}
+	} else {
+		if err := launchVM(cfg, qemuBin, qemuArgs); err != nil {
+			die("%s", err)
+		}
 	}
 
 	// Daemon success — locks must persist while QEMU runs.

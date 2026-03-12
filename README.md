@@ -1,6 +1,18 @@
 # Virt-Forge
 
-A QEMU virtual machine manager — CLI launcher, control utility, disk manager, and PyQt6 GUI, written in Go and Python.
+A QEMU virtual machine manager for Linux — CLI launcher, controller, disk manager, and PyQt6 GUI, written in Go and Python.
+
+---
+
+## Features
+
+- **VM Launcher** — launch QEMU VMs with full control over profile, RAM, CPU, display, network, and audio
+- **Snapshot management** — create, list, apply, and delete internal QCOW2 snapshots
+- **Live migration** — transfer a running VM to another machine without shutting it down
+- **Disk Manager** — create, inspect, resize, and convert QCOW2 disk images
+- **Control panel** — monitor running VMs with PID, uptime, disk name, and port info
+- **Multi-arch** — supports `x86_64` and `aarch64`
+- **KVM + TCG** — hardware acceleration where available, TCG fallback otherwise
 
 ---
 
@@ -8,54 +20,54 @@ A QEMU virtual machine manager — CLI launcher, control utility, disk manager, 
 
 ```
 virt-forge/
-├── assets/                  # Go source files
+├── assets/
 │   ├── go.mod
 │   ├── go.sum
-│   ├── main.go              # qemu-run — VM launcher (CLI args)
-│   ├── qemu-ctl.go          # qemu-ctl — VM status / stop / list
-│   └── qemu-disk.go         # qemu-disk — disk image manager (CLI args)
+│   ├── main.go              # qemu-run  — VM launcher
+│   ├── qemu-ctl.go          # qemu-ctl  — list / stop / status
+│   └── qemu-disk.go         # qemu-disk — disk image manager
 │
-├── bin/                     # Build output (binaries + disk images)
-│   ├── qemu-run             # VM launcher binary
-│   ├── qemu-ctl             # Control binary
-│   ├── qemu-disk            # Disk manager binary
-│   ├── alpine.qcow2         # (example) disk image
-│   └── debian12.qcow2       # (example) disk image
+├── bin/                     # Build output: binaries + disk images
+│   ├── qemu-run
+│   ├── qemu-ctl
+│   ├── qemu-disk
+│   └── *.qcow2              # disk images live here
 │
 ├── build/
-│   ├── make                 # Main build script (Go + GUI)
-│   └── make-gui             # GUI-only build script (PyInstaller)
+│   ├── make                 # Build script (Go + GUI)
+│   └── make-gui             # GUI-only build (PyInstaller)
 │
 ├── gui/
 │   └── virt-forge.py        # PyQt6 GUI source
 │
 ├── installer/
-│   ├── install-deps.sh      # QEMU system dependency installer
+│   ├── install-deps.sh      # System dependency installer
 │   ├── install-desktop.sh   # Desktop menu entry installer
 │   └── virt-forge.png       # App icon (512×512)
 │
-├── _internal/               # GUI runtime libs — must stay beside virt-forge binary
-├── virt-forge               # GUI binary (PyInstaller one-dir)
+├── _internal/               # GUI runtime libs — must stay beside the binary
+├── virt-forge               # GUI executable
 └── README.md
 ```
 
-> **Important:** `_internal/` must always remain in the same directory as the
-> `virt-forge` binary. Moving or deleting it will prevent the GUI from starting.
+> **Note:** `_internal/` must always remain in the same directory as the
+> `virt-forge` binary. Moving or deleting it will prevent the GUI from launching.
 
 ---
 
-## Step 1 — Install QEMU Dependencies
-
-The following system binaries are required:
-`qemu-system-x86_64`, `qemu-system-aarch64`, `qemu-utils`
+## Step 1 — Install System Dependencies
 
 ```sh
 sudo ./installer/install-deps.sh
 ```
 
-**Supported distributions:**
+Installs `qemu-system-x86_64`, `qemu-system-aarch64`, and `qemu-utils`.
+Automatically adds the current user to the `kvm` group if `/dev/kvm` is present
+(re-login required).
 
-| Package Manager | Distributions |
+**Supported package managers:**
+
+| Manager | Distributions |
 |---|---|
 | `apt` | Debian, Ubuntu, Mint, Pop!\_OS, Kali, Raspbian |
 | `dnf` | Fedora, RHEL 8+, AlmaLinux, Rocky |
@@ -66,15 +78,11 @@ sudo ./installer/install-deps.sh
 | `xbps` | Void Linux |
 | `emerge` | Gentoo |
 
-The installer verifies each binary after installation and exits with an error if
-anything is missing. If `/dev/kvm` is found, the current user is automatically
-added to the `kvm` group (re-login required).
-
 ---
 
-## Step 2 — Build the Project
+## Step 2 — Build
 
-### Requirements
+**Requirements:**
 
 | Tool | Purpose |
 |---|---|
@@ -83,81 +91,73 @@ added to the `kvm` group (re-login required).
 | `PyInstaller` | `pip install pyinstaller` |
 | `PyQt6` | `pip install PyQt6` |
 
-### Build Commands
-
 ```sh
-# Build everything (Go binaries + GUI)
+# Build everything
 ./build/make
 
-# Build individually
-./build/make qemu-run    # VM launcher only
-./build/make qemu-ctl    # Control binary only
-./build/make qemu-disk   # Disk manager only
-./build/make gui         # GUI only (PyInstaller one-dir)
+# Build individual components
+./build/make qemu-run
+./build/make qemu-ctl
+./build/make qemu-disk
+./build/make gui
 
-# Remove all build output (disk images are preserved)
+# Remove build output (disk images are preserved)
 ./build/make clean
 ```
 
-After a successful build the project root will contain:
+After a successful build:
 
 ```
-virt-forge        ← GUI executable  (run this)
-_internal/        ← runtime libs    (must stay here)
+virt-forge        ← run this
+_internal/        ← keep this alongside the binary
 ```
 
 ---
 
-## Step 3 — Install Desktop Entry (Optional)
-
-Add Virt-Forge to your application menu:
+## Step 3 — Desktop Entry (Optional)
 
 ```sh
-# User-level install (no sudo required)
+# User-level (no sudo)
 ./installer/install-desktop.sh
 
-# System-wide install
+# System-wide
 sudo ./installer/install-desktop.sh
 
 # Remove
 ./installer/install-desktop.sh remove
-sudo ./installer/install-desktop.sh remove
 ```
 
 ---
 
-## Usage
-
-### Launching the GUI
+## GUI Usage
 
 ```sh
 ./virt-forge
 ```
 
-Or search for **Virt-Forge** in your application menu if the desktop entry is installed.
+Or launch **Virt-Forge** from your application menu if the desktop entry is installed.
 
 ---
 
 ### VM Launcher Tab
 
-Configure and launch a VM directly from the GUI — no terminal required.
+Configure and start a VM. Click **❓ Help** inside the tab for a full in-app guide.
 
 | Field | Description |
 |---|---|
-| **Profile** | `normal` (4 GB RAM, 2 CPU) / `lowram` (2 GB RAM, 1 CPU) / saved profile |
+| **Profile** | `normal` (4 GB RAM, 2 CPU) · `lowram` (2 GB RAM, 1 CPU) · saved profiles from `~/.vm_profiles/` |
 | **Architecture** | `x86_64` or `aarch64` |
-| **Disk** | Select from `bin/` or browse / enter a full path |
-| **Boot ISO** | Optional — for first-time OS install only |
-| **RAM / CPU** | Override the profile defaults |
+| **Disk** | Select from `bin/` or enter/browse a full path |
+| **Boot ISO** | Optional — for OS installation only |
+| **RAM / CPU** | Override profile defaults |
 | **SSH port** | Host port forwarded to guest port 22 (default: `4444`) |
-| **Extra forwards** | Additional port mappings, e.g. `8080:8080,5432:5432` |
-| **VNC** | Enable remote display; set port in the `5900–5999` range |
-| **SPICE** | Enable SPICE display; requires a password |
-| **Audio** | Enable PulseAudio passthrough (off by default) |
+| **Extra forwards** | Additional port mappings e.g. `8080:8080,5432:5432` |
+| **VNC** | Remote display; port in `5900–5999` range |
+| **SPICE** | Better-performance remote display; requires a password |
+| **Audio** | PulseAudio passthrough (off by default) |
 | **Mode** | Daemon (background) or foreground |
-
-Click **🚀 Launch VM** — the binary starts QEMU directly and reports success or
-failure in the console area below the button.
+| **Snapshot** | Boot into a saved snapshot by name |
+| **Live Migration** | Send, Receive, or Monitor-only mode (see below) |
 
 #### Connecting to a Running VM
 
@@ -165,8 +165,8 @@ failure in the console area below the button.
 # SSH
 ssh user@localhost -p 4444
 
-# VNC (connect to the port you set, e.g. 5909)
-# Use any VNC viewer: TigerVNC, Remmina, etc.
+# VNC
+vncviewer 127.0.0.1:5909
 
 # SPICE
 remote-viewer spice://localhost:5910
@@ -176,12 +176,13 @@ remote-viewer spice://localhost:5910
 
 ### Control Tab
 
-Monitor and stop running VMs.
+Displays all running VMs with PID, uptime, disk name, and port info.
+Auto-refreshes every 5 seconds.
 
 | Button | Action |
 |---|---|
-| ⟳ Refresh | Update the VM list (also auto-refreshes every 5 seconds) |
-| 📊 Status | Show details for all running VMs (PID, ports, lock files) |
+| ⟳ Refresh | Force-refresh the VM list |
+| 📊 Status | Show detailed status for the selected VM |
 | 🛑 Stop Selected | Stop the selected VM |
 | 💀 Stop All | Stop all running VMs |
 
@@ -192,114 +193,211 @@ Monitor and stop running VMs.
 | Button | Action |
 |---|---|
 | ➕ Create Image | Create a new QCOW2 disk image |
-| ℹ Image Info | Display detailed information about an image |
-| 📏 Resize Image | Expand an existing image |
-| 🔄 Convert Image | Convert between formats: `qcow2` / `raw` / `vmdk` / `vdi` / `vpc` / `vhdx` |
+| ℹ Image Info | Show virtual/actual size and format |
+| 📏 Resize Image | Grow an existing image (shrinking not supported) |
+| 🔄 Convert Image | Convert between `qcow2` / `raw` / `vmdk` / `vdi` / `vpc` / `vhdx` |
+| 📋 List Snapshots | List all snapshots inside a disk image |
+| 📸 Create Snapshot | Save the current VM state as a named snapshot |
+| ⏪ Apply Snapshot | Restore the disk to a saved snapshot |
+| 🗑 Delete Snapshot | Remove a snapshot from the image |
 
-Use the **Browse** button in each dialog to pick a file, or enter a full path
-directly. Bare filenames (no directory) are resolved relative to `bin/`.
+> It is recommended to shut down the VM before creating a snapshot to ensure
+> a consistent disk state.
 
 ---
 
-### CLI — Direct Binary Usage
+## Live Migration
 
-All tools accept CLI arguments directly — no interactive prompts.
+Live migration transfers a running VM from one machine to another without
+shutting it down. RAM and CPU state are streamed over the network. The disk
+image must already exist on the destination (copy it manually or use shared
+storage such as NFS).
 
-#### qemu-run
+### Automatic (recommended)
+
+**System B — destination (run first):**
 
 ```sh
-./bin/qemu-run --disk <path> [options]
+# GUI: Live Migration → Receive, Listen port: 5555 → Launch VM
+qemu-run --disk vm.qcow2 --incoming tcp:0:5555
+```
 
-Options:
-  --profile  normal|lowram|<saved-name>   (default: normal)
-  --arch     x86_64|aarch64
-  --disk     <path>                        required
-  --iso      <path>
-  --ram      <MB>
-  --cpu      <n>
-  --ssh      <port>                        (default: 4444)
-  --vnc      <port>                        (default: 5909)
+**System A — source:**
+
+```sh
+# GUI: Live Migration → Send, Destination: 192.168.1.x:5555 → Launch VM
+qemu-run --disk vm.qcow2 --migrate 192.168.1.x:5555
+```
+
+`qemu-run` opens an internal monitor, issues the migrate command, polls
+status every second, and shuts down the source QEMU automatically on
+completion.
+
+### Manual (advanced)
+
+```sh
+# System A — expose the QEMU monitor
+qemu-run --disk vm.qcow2 --monitor 4445
+
+# From another terminal on System A
+telnet localhost 4445
+(qemu) migrate tcp:192.168.1.x:5555
+```
+
+### Notes
+
+- Both machines should run the same QEMU version and the same acceleration
+  mode (KVM or TCG).
+- Open port `5555` (or your chosen port) in the firewall on System B.
+- After migration completes, reconnect your VNC/SPICE client to System B.
+
+---
+
+## Snapshots
+
+Snapshots are stored inside the QCOW2 file — no extra files needed.
+
+```sh
+# CLI
+./bin/qemu-disk snapshot list    --name bin/debian.qcow2
+./bin/qemu-disk snapshot create  --name bin/debian.qcow2 --snap before-upgrade
+./bin/qemu-disk snapshot apply   --name bin/debian.qcow2 --snap before-upgrade
+./bin/qemu-disk snapshot delete  --name bin/debian.qcow2 --snap before-upgrade
+
+# Boot into a snapshot
+./bin/qemu-run --disk bin/debian.qcow2 --snapshot before-upgrade
+```
+
+---
+
+## CLI Reference
+
+All binaries use explicit flags — no interactive prompts.
+
+### qemu-run
+
+```
+qemu-run --disk <path> [options]
+
+Required:
+  --disk <path>
+
+Profile:
+  --profile normal|lowram|<saved-name>     default: normal
+
+VM config:
+  --arch    x86_64|aarch64                 default: x86_64
+  --ram     <MB>
+  --cpu     <n>
+  --iso     <path>
+
+Network:
+  --ssh          <port>                    default: 4444
+  --extra-fwds   hostport:guestport,...
+
+Display:
+  --vnc          <port>                    default: 5909
   --no-vnc
-  --spice    <port>
-  --spice-pass <password>
+  --spice        <port>
+  --spice-pass   <password>
   --no-spice
+
+Audio:
   --audio
   --no-audio
-  --fg                                     run in foreground (default: daemon)
-  --extra-fwds hostport:guestport,...
+
+Mode:
+  --fg                                     foreground (default: daemon)
+
+Snapshot:
+  --snapshot <n>                           boot into saved snapshot
+
+Live Migration:
+  --migrate  <ip:port>                     send this VM to destination
+  --incoming tcp:0:<port>                  receive an incoming VM
+  --monitor  <port>                        expose QEMU monitor via TCP
 ```
 
-Examples:
+**Examples:**
 
 ```sh
-# Quick launch with defaults
-./bin/qemu-run --disk bin/alpine.qcow2
+# Quick launch
+qemu-run --disk bin/alpine.qcow2
 
-# Custom RAM, VNC port, foreground
-./bin/qemu-run --disk bin/debian12.qcow2 --ram 8192 --cpu 4 --vnc 5901 --fg
+# Custom resources, VNC port
+qemu-run --disk bin/debian.qcow2 --ram 8192 --cpu 4 --vnc 5901 --fg
 
-# With SPICE and extra port forward
-./bin/qemu-run --disk bin/alpine.qcow2 --spice 5910 --spice-pass hunter2 --extra-fwds 8080:8080
+# SPICE with extra port forward
+qemu-run --disk bin/alpine.qcow2 --spice 5910 --spice-pass hunter2 \
+         --extra-fwds 8080:8080
+
+# Boot into snapshot
+qemu-run --disk bin/debian.qcow2 --snapshot before-upgrade
+
+# Live migration — send
+qemu-run --disk bin/debian.qcow2 --migrate 192.168.1.50:5555
+
+# Live migration — receive
+qemu-run --disk bin/debian.qcow2 --incoming tcp:0:5555
 ```
 
-#### qemu-ctl
+---
+
+### qemu-ctl
 
 ```sh
-./bin/qemu-ctl list      # list running VMs
-./bin/qemu-ctl status    # show PID, ports, lock files
-./bin/qemu-ctl stop      # stop a VM (interactive selection)
-./bin/qemu-ctl debug     # raw parsed fields + lock dir contents
+qemu-ctl list      # list running VMs with PID, ports, and uptime
+qemu-ctl status    # detailed status for all VMs
+qemu-ctl stop      # stop a VM
+qemu-ctl debug     # raw parsed fields and lock directory contents
 ```
 
-#### qemu-disk
+---
+
+### qemu-disk
 
 ```sh
-./bin/qemu-disk create  --name <file> --size <size>
-./bin/qemu-disk info    --name <file>
-./bin/qemu-disk resize  --name <file> --size <size>
-./bin/qemu-disk convert --src <file>  --dst <file> --fmt <format>
+qemu-disk create           --name <file> --size <size>
+qemu-disk info             --name <file>
+qemu-disk resize           --name <file> --size <size>
+qemu-disk convert          --src <file>  --dst <file> --fmt <format>
+qemu-disk snapshot list    --name <file>
+qemu-disk snapshot create  --name <file> --snap <n>
+qemu-disk snapshot apply   --name <file> --snap <n>
+qemu-disk snapshot delete  --name <file> --snap <n>
 ```
 
-Size format: number followed by `K`, `M`, `G`, or `T` — e.g. `20G`, `512M`.
+Size format: integer followed by `K`, `M`, `G`, or `T` — e.g. `20G`, `512M`, `2T`.
 
-Examples:
-
-```sh
-./bin/qemu-disk create  --name bin/debian.qcow2 --size 20G
-./bin/qemu-disk info    --name bin/alpine.qcow2
-./bin/qemu-disk resize  --name bin/alpine.qcow2 --size 30G
-./bin/qemu-disk convert --src bin/alpine.qcow2 --dst bin/alpine.raw --fmt raw
-```
+Supported convert formats: `qcow2` `raw` `vmdk` `vdi` `vpc` `vhdx` `qed` `parallels`
 
 ---
 
 ## Lock File System
 
-When a VM starts, lock files are created in `~/.virt-forge-locks/`:
+Running VMs create lock files in `~/.virt-forge-locks/`:
 
 ```
 ~/.virt-forge-locks/
-├── qemu_4444.pid      # QEMU process ID (keyed by SSH port)
+├── qemu_4444.pid        # QEMU PID (keyed by SSH port)
 ├── ssh_4444.lock
-├── vnc_5909.lock      # keyed by VNC port (not display number)
+├── vnc_5909.lock        # keyed by VNC port
 └── spice_5910.lock
 ```
 
-- Lock files are removed automatically when the VM stops
-- Stale locks from crashed sessions are detected and reported by `qemu-ctl status`
-- Starting a VM on an already-used port produces a conflict error
+- Locks are removed automatically when the VM stops
+- `qemu-ctl status` reports stale locks from crashed sessions
+- Port conflicts are caught before launch
 
 ---
 
 ## KVM Hardware Acceleration
 
-KVM significantly improves VM performance. To enable it:
-
 ```sh
-# Check if KVM is available
+# Check availability
 ls /dev/kvm
 
-# Check your group membership
+# Check group membership
 groups $USER
 
 # Add yourself to the kvm group (re-login required)
@@ -313,20 +411,26 @@ Without KVM, QEMU falls back to TCG (software emulation) — functional but slow
 ## Environment Variables
 
 ```sh
-# Override the project root (default: auto-detected from binary location)
+# Override project root (default: auto-detected from binary location)
 VIRT_FORGE_ROOT=/opt/virt-forge ./virt-forge
 
-# Override the bin directory
+# Override bin directory
 VIRT_FORGE_BIN=/custom/bin ./virt-forge
 ```
 
 ---
 
-## Dependency Summary
+## Dependencies
 
-| Component | Dependencies |
+| Component | Requirements |
 |---|---|
 | VM Launcher / CTL / Disk | `qemu-system-x86_64` `qemu-system-aarch64` `qemu-utils` |
-| Build (Go) | `go` 1.21+ |
-| Build (GUI) | `python3` `pyinstaller` `PyQt6` |
+| Build — Go | `go` 1.21+ |
+| Build — GUI | `python3` · `PyInstaller` · `PyQt6` |
 | GUI Runtime | `_internal/` (bundled — no separate install needed) |
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.

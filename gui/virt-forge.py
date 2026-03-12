@@ -71,10 +71,17 @@ class DiskDialog(QDialog):
     def __init__(self, mode, parent=None):
         super().__init__(parent)
         self.mode = mode
-        self.setWindowTitle({"create": "Create Image",
-                             "info":   "Image Info",
-                             "resize": "Resize Image",
-                             "convert":"Convert Image"}[mode])
+        titles = {
+            "create":           "Create Image",
+            "info":             "Image Info",
+            "resize":           "Resize Image",
+            "convert":          "Convert Image",
+            "snapshot list":    "Snapshot — List",
+            "snapshot create":  "Snapshot — Create",
+            "snapshot delete":  "Snapshot — Delete",
+            "snapshot apply":   "Snapshot — Apply",
+        }
+        self.setWindowTitle(titles.get(mode, mode))
         self.setMinimumWidth(860)
         self.setStyleSheet(parent.styleSheet() if parent else "")
         self._build()
@@ -130,6 +137,13 @@ class DiskDialog(QDialog):
                 fmt_combo.addItem(f)
             layout.addRow("Format:", fmt_combo)
             self.fields["fmt"] = fmt_combo
+
+        elif self.mode == "snapshot list":
+            add_file("Image path:", "name", "e.g. /path/to/alpine.qcow2")
+
+        elif self.mode in ("snapshot create", "snapshot delete", "snapshot apply"):
+            add_file("Image path:", "name", "e.g. /path/to/alpine.qcow2")
+            add_text("Snapshot name:", "snap", "e.g. before-upgrade")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
@@ -261,6 +275,8 @@ class VMTab(QWidget):
         root.addWidget(self._section_network())
         root.addWidget(self._section_display())
         root.addWidget(self._section_options())
+        mig_grp = self._section_migration()
+        root.addWidget(mig_grp)
         root.addStretch(1)
 
         scroll.setWidget(form_widget)
@@ -271,6 +287,11 @@ class VMTab(QWidget):
         btn_layout = QVBoxLayout(btn_area)
         btn_layout.setContentsMargins(32, 8, 32, 8)
         btn_layout.setSpacing(8)
+
+        btn_row = QWidget()
+        btn_row_layout = QHBoxLayout(btn_row)
+        btn_row_layout.setContentsMargins(0, 0, 0, 0)
+        btn_row_layout.setSpacing(10)
 
         self.launch_btn = QPushButton("🚀   Launch VM")
         self.launch_btn.setFixedHeight(64)
@@ -286,7 +307,23 @@ class VMTab(QWidget):
             QPushButton:disabled{ background: #21262d; color: #8b949e; }
         """)
         self.launch_btn.clicked.connect(self.launch_vm)
-        btn_layout.addWidget(self.launch_btn)
+
+        help_btn = QPushButton("❓  Help")
+        help_btn.setFixedHeight(64)
+        help_btn.setFixedWidth(130)
+        help_btn.setStyleSheet("""
+            QPushButton {
+                background: #0078d4;
+                font-size: 20px;
+                border-radius: 8px;
+            }
+            QPushButton:hover { background: #0090ff; }
+        """)
+        help_btn.clicked.connect(self._show_help)
+
+        btn_row_layout.addWidget(self.launch_btn, stretch=1)
+        btn_row_layout.addWidget(help_btn)
+        btn_layout.addWidget(btn_row)
 
         self.console = Console()
         self.console.setFixedHeight(160)
@@ -477,7 +514,77 @@ class VMTab(QWidget):
         self.daemon_check.setChecked(True)
         fl.addRow("Mode:", self.daemon_check)
 
+        self.snapshot_edit = QLineEdit()
+        self.snapshot_edit.setPlaceholderText("Leave blank to boot normally")
+        fl.addRow("Snapshot:", self.snapshot_edit)
+
         return g
+
+    # ── Migration ─────────────────────────────────────────────
+
+    def _section_migration(self):
+        g = self._group("Live Migration")
+        self._mig_group = g          # store ref before _mig_update_rows is called
+        fl = g.layout()
+
+        # Mode selector
+        self.mig_mode_combo = QComboBox()
+        self.mig_mode_combo.addItem("Disabled",  "off")
+        self.mig_mode_combo.addItem("📤  Send  — migrate this VM to another host", "send")
+        self.mig_mode_combo.addItem("📥  Receive — wait for incoming VM",          "recv")
+        self.mig_mode_combo.addItem("🖥  Monitor only — expose QEMU monitor TCP",  "monitor")
+        self.mig_mode_combo.currentIndexChanged.connect(self._on_mig_mode_changed)
+        fl.addRow("Mode:", self.mig_mode_combo)
+
+        # Send: destination ip:port
+        self.mig_dest_edit = QLineEdit()
+        self.mig_dest_edit.setPlaceholderText("e.g. 192.168.43.105:5555")
+        self.mig_dest_row = fl.addRow("Destination:", self.mig_dest_edit)
+
+        # Recv: listen port
+        self.mig_port_spin = QSpinBox()
+        self.mig_port_spin.setRange(1024, 65535)
+        self.mig_port_spin.setValue(5555)
+        self.mig_port_row = fl.addRow("Listen port:", self.mig_port_spin)
+
+        # Monitor: port
+        self.mig_mon_spin = QSpinBox()
+        self.mig_mon_spin.setRange(1024, 65535)
+        self.mig_mon_spin.setValue(4445)
+        self.mig_mon_row = fl.addRow("Monitor port:", self.mig_mon_spin)
+
+        self._mig_update_rows("off")
+        return g
+
+    def _mig_update_rows(self, mode):
+        """Show/hide migration rows based on selected mode."""
+        show_dest = (mode == "send")
+        show_port = (mode == "recv")
+        show_mon  = (mode == "monitor")
+
+        self.mig_dest_edit.setVisible(show_dest)
+        self.mig_port_spin.setVisible(show_port)
+        self.mig_mon_spin.setVisible(show_mon)
+
+        # Hide/show the label in the form row
+        fl = self._mig_group.layout()
+        for i in range(fl.rowCount()):
+            item  = fl.itemAt(i, fl.ItemRole.LabelRole)
+            field = fl.itemAt(i, fl.ItemRole.FieldRole)
+            if item and field:
+                w = field.widget()
+                if w in (self.mig_dest_edit, self.mig_port_spin, self.mig_mon_spin):
+                    item.widget().setVisible(w.isVisible())
+
+    def _on_mig_mode_changed(self, _idx):
+        mode = self.mig_mode_combo.currentData()
+        self._mig_update_rows(mode)
+        # receiving VM must run foreground
+        if mode == "recv":
+            self.daemon_check.setChecked(False)
+            self.daemon_check.setEnabled(False)
+        else:
+            self.daemon_check.setEnabled(True)
 
     # ── Slots ─────────────────────────────────────────────────
 
@@ -599,7 +706,181 @@ class VMTab(QWidget):
         if not self.daemon_check.isChecked():
             args.append("--fg")
 
+        snap = self.snapshot_edit.text().strip()
+        if snap:
+            args += ["--snapshot", snap]
+
+        # Migration
+        mig_mode = self.mig_mode_combo.currentData()
+        if mig_mode == "send":
+            dest = self.mig_dest_edit.text().strip()
+            if not dest or ":" not in dest:
+                return None, "Migration destination must be in format  ip:port\ne.g. 192.168.43.105:5555"
+            args += ["--migrate", dest]
+        elif mig_mode == "recv":
+            port = self.mig_port_spin.value()
+            args += ["--incoming", f"tcp:0:{port}"]
+        elif mig_mode == "monitor":
+            args += ["--monitor", str(self.mig_mon_spin.value())]
+
         return args, ""
+
+    # ── Help ─────────────────────────────────────────────────
+
+    def _show_help(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Virt-Forge — User Guide")
+        dlg.setMinimumSize(900, 700)
+        dlg.setStyleSheet(self.window().styleSheet())
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(32, 24, 32, 24)
+        layout.setSpacing(16)
+
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setFont(QFont("Monospace", 15))
+        text.setStyleSheet("""
+            QTextEdit {
+                background: #0d1117;
+                color: #e6edf3;
+                border: 1px solid #30363d;
+                border-radius: 8px;
+                padding: 16px;
+            }
+        """)
+        text.setHtml("""
+<style>
+  body  { font-family: 'DejaVu Sans', sans-serif; font-size: 15px;
+          color: #e6edf3; background: #0d1117; }
+  h2    { color: #58a6ff; border-bottom: 1px solid #30363d;
+          padding-bottom: 6px; margin-top: 20px; }
+  h3    { color: #3fb950; margin-top: 14px; }
+  code  { background: #161b22; color: #f0883e; padding: 2px 6px;
+          border-radius: 4px; font-family: monospace; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  td,th { border: 1px solid #30363d; padding: 6px 10px; }
+  th    { background: #161b22; color: #8b949e; }
+  .tip  { background: #1c2d1e; border-left: 3px solid #3fb950;
+          padding: 8px 12px; border-radius: 4px; margin: 8px 0; }
+  .warn { background: #2d1e1e; border-left: 3px solid #f85149;
+          padding: 8px 12px; border-radius: 4px; margin: 8px 0; }
+</style>
+
+<h2>🖥 VM Launcher</h2>
+
+<h3>Profile &amp; Architecture</h3>
+<table>
+  <tr><th>Field</th><th>Description</th></tr>
+  <tr><td>Profile</td><td><code>normal</code> = 4 GB RAM, 2 CPU &nbsp;|&nbsp;
+      <code>lowram</code> = 2 GB RAM, 1 CPU &nbsp;|&nbsp;
+      saved profiles from <code>~/.vm_profiles/</code></td></tr>
+  <tr><td>Architecture</td><td><code>x86_64</code> for most Linux ISOs,
+      <code>aarch64</code> for ARM64</td></tr>
+</table>
+
+<h3>Disk Image</h3>
+<table>
+  <tr><th>Field</th><th>Description</th></tr>
+  <tr><td>Disk</td><td>Select a <code>.qcow2</code> file from
+      <code>bin/</code> directory</td></tr>
+  <tr><td>Manual path</td><td>Or paste any full path to a disk image</td></tr>
+  <tr><td>Boot ISO</td><td>Optional — mount an ISO for OS installation</td></tr>
+</table>
+
+<h3>Resources</h3>
+Set the amount of RAM (in MB) and the number of CPU cores. Selecting a profile auto-fills these values; you can override them manually.
+
+<h3>Network</h3>
+<table>
+  <tr><th>Field</th><th>Description</th></tr>
+  <tr><td>SSH port</td><td>Host port forwarded to VM port 22.
+      Connect with: <code>ssh user@localhost -p 4444</code></td></tr>
+  <tr><td>Extra forwards</td><td>Comma-separated <code>hostport:guestport</code> pairs.
+      Example: <code>8080:8080,5432:5432</code></td></tr>
+</table>
+
+<h3>Display</h3>
+<table>
+  <tr><th>Field</th><th>Description</th></tr>
+  <tr><td>VNC</td><td>Connect with any VNC viewer to <code>127.0.0.1:590X</code></td></tr>
+  <tr><td>SPICE</td><td>Better performance than VNC. Connect with:
+      <code>remote-viewer spice://localhost:5910</code></td></tr>
+</table>
+
+<h3>Options</h3>
+<table>
+  <tr><th>Field</th><th>Description</th></tr>
+  <tr><td>Audio</td><td>Requires PulseAudio. Disabled by default.</td></tr>
+  <tr><td>Mode</td><td>Daemon = runs in background. Foreground = attached to terminal.</td></tr>
+  <tr><td>Snapshot</td><td>Enter a saved snapshot name to boot into that state.
+      Use <b>Disk Manager → List Snapshots</b> to see available names.</td></tr>
+</table>
+
+<h2>📡 Live Migration</h2>
+
+<div class="tip">
+  Live migration transfers a running VM from one machine to another
+  <b>without shutting it down</b>. RAM and CPU state are transferred over the network.
+  The disk image must already exist on System B (copy it manually or use shared storage).
+</div>
+
+<h3>Step-by-step</h3>
+
+<b>Step 1 — Prepare System B (Destination):</b><br>
+Set Mode = <code>📥 Receive</code>, Listen port = <code>5555</code> → click Launch VM.<br>
+System B starts QEMU in a paused state, waiting for the source VM to connect.
+
+<br><br>
+<b>Step 2 — Send from System A (Source):</b><br>
+Set Mode = <code>📤 Send</code>, Destination = <code>192.168.43.105:5555</code> → click Launch VM.<br>
+qemu-run automatically opens a monitor, sends the migrate command, and polls status.
+Once complete, the source QEMU shuts down automatically.
+
+<br><br>
+<b>Manual monitor (advanced):</b><br>
+Set Mode = <code>🖥 Monitor only</code>, port = <code>4445</code> → click Launch VM.<br>
+Then: <code>telnet localhost 4445</code><br>
+At the QEMU prompt: <code>migrate tcp:192.168.43.105:5555</code>
+
+<div class="warn">
+  ⚠ Migration may fail if KVM/TCG acceleration differs between machines.
+  Both systems should run the same QEMU version.
+  Make sure port 5555 is open in the firewall on System B.
+</div>
+
+<h2>💾 Disk Manager</h2>
+<table>
+  <tr><th>Button</th><th>Description</th></tr>
+  <tr><td>➕ Create</td><td>Create a new qcow2 disk image. Size format: <code>20G</code>, <code>512M</code></td></tr>
+  <tr><td>ℹ Info</td><td>Show virtual size, actual size, and format of a disk image</td></tr>
+  <tr><td>📏 Resize</td><td>Grow a disk image (shrinking is not supported)</td></tr>
+  <tr><td>🔄 Convert</td><td>Convert between formats: qcow2 ↔ raw ↔ vmdk, etc.</td></tr>
+  <tr><td>📋 List Snapshots</td><td>List all saved snapshots inside a disk image</td></tr>
+  <tr><td>📸 Create Snapshot</td><td>Save the current VM state as a named snapshot</td></tr>
+  <tr><td>⏪ Apply Snapshot</td><td>Restore the disk to a previously saved snapshot</td></tr>
+  <tr><td>🗑 Delete Snapshot</td><td>Remove a snapshot from the disk image</td></tr>
+</table>
+
+<div class="tip">
+  💡 It is recommended to shut down the VM before creating a snapshot — otherwise the disk state may be inconsistent.
+</div>
+
+<h2>⚙ Control Tab</h2>
+Displays all running VMs with PID, uptime, disk name, and SSH/VNC/SPICE ports.<br>
+<b>Status</b> — runs <code>qemu-ctl status</code> on the selected VM<br>
+<b>Stop Selected</b> — gracefully stop the selected VM<br>
+<b>Stop All</b> — stop all running VMs
+""")
+
+        layout.addWidget(text)
+
+        close_btn = QPushButton("Close")
+        close_btn.setFixedHeight(48)
+        close_btn.clicked.connect(dlg.accept)
+        layout.addWidget(close_btn)
+
+        dlg.exec()
 
     # ── Launch ────────────────────────────────────────────────
 
@@ -864,10 +1145,14 @@ class DiskTab(QWidget):
         grid.setSpacing(16)
 
         ops = [
-            ("➕  Create Image",  "create",  "#238636", "#2ea043"),
-            ("ℹ   Image Info",   "info",    "#0078d4", "#0090ff"),
-            ("📏  Resize Image", "resize",  "#9e6a03", "#bb8009"),
-            ("🔄  Convert Image","convert", "#6e40c9", "#8250df"),
+            ("➕  Create Image",        "create",          "#238636", "#2ea043"),
+            ("ℹ   Image Info",          "info",            "#0078d4", "#0090ff"),
+            ("📏  Resize Image",        "resize",          "#9e6a03", "#bb8009"),
+            ("🔄  Convert Image",       "convert",         "#6e40c9", "#8250df"),
+            ("📋  List Snapshots",      "snapshot list",   "#1c4a2e", "#238636"),
+            ("📸  Create Snapshot",     "snapshot create", "#0d3349", "#0078d4"),
+            ("🗑   Delete Snapshot",    "snapshot delete", "#4a1c1c", "#c0392b"),
+            ("⏪  Apply Snapshot",      "snapshot apply",  "#3d2b00", "#9e6a03"),
         ]
         for i, (label, mode, bg, hover) in enumerate(ops):
             b = QPushButton(label)
@@ -947,6 +1232,28 @@ class DiskTab(QWidget):
                     "--src", bin_path(src), "--dst", bin_path(dst), "--fmt", fmt]
             self.console.clear_and_print(
                 f"Converting {bin_path(src)} \u2192 {bin_path(dst)} ({fmt})\u2026")
+
+        elif mode == "snapshot list":
+            name = dlg.get("name")
+            if not name:
+                QMessageBox.warning(self, "Missing fields", "Image path is required.")
+                return
+            args = [str(disk_bin), "snapshot", "list", "--name", bin_path(name)]
+            self.console.clear_and_print(f"Listing snapshots in {bin_path(name)}\u2026")
+
+        elif mode in ("snapshot create", "snapshot delete", "snapshot apply"):
+            name = dlg.get("name")
+            snap = dlg.get("snap")
+            if not name or not snap:
+                QMessageBox.warning(self, "Missing fields",
+                    "Image path and snapshot name are both required.")
+                return
+            sub = mode.split()[1]   # "create" / "delete" / "apply"
+            args = [str(disk_bin), "snapshot", sub,
+                    "--name", bin_path(name), "--snap", snap]
+            verbs = {"create": "Creating", "delete": "Deleting", "apply": "Applying"}
+            self.console.clear_and_print(
+                f"{verbs[sub]} snapshot \u201c{snap}\u201d on {bin_path(name)}\u2026")
 
         w = Worker(args, timeout=None)
         self._workers.append(w)

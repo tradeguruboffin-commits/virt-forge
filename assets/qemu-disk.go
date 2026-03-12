@@ -18,20 +18,28 @@ var imgBin string
 const usageText = `qemu-disk — QCOW2 image manager
 
 Usage:
-  qemu-disk create  --name <file> --size <size>
-  qemu-disk info    --name <file>
-  qemu-disk resize  --name <file> --size <size>
-  qemu-disk convert --src <file>  --dst <file> --fmt <format>
+  qemu-disk create           --name <file> --size <size>
+  qemu-disk info             --name <file>
+  qemu-disk resize           --name <file> --size <size>
+  qemu-disk convert          --src <file>  --dst <file> --fmt <format>
+  qemu-disk snapshot list    --name <file>
+  qemu-disk snapshot create  --name <file> --snap <name>
+  qemu-disk snapshot delete  --name <file> --snap <name>
+  qemu-disk snapshot apply   --name <file> --snap <name>
 
 Size format: number followed by K, M, G, or T  (e.g. 10G, 512M, 2T)
 
 Formats for convert: qcow2, raw, vmdk, vdi, vpc, vhdx, qed, parallels
 
 Examples:
-  qemu-disk create  --name debian.qcow2 --size 20G
-  qemu-disk info    --name debian.qcow2
-  qemu-disk resize  --name debian.qcow2 --size 30G
-  qemu-disk convert --src debian.qcow2 --dst debian.raw --fmt raw
+  qemu-disk create           --name debian.qcow2 --size 20G
+  qemu-disk info             --name debian.qcow2
+  qemu-disk resize           --name debian.qcow2 --size 30G
+  qemu-disk convert          --src debian.qcow2 --dst debian.raw --fmt raw
+  qemu-disk snapshot list    --name debian.qcow2
+  qemu-disk snapshot create  --name debian.qcow2 --snap before-upgrade
+  qemu-disk snapshot apply   --name debian.qcow2 --snap before-upgrade
+  qemu-disk snapshot delete  --name debian.qcow2 --snap before-upgrade
 `
 
 func usage() {
@@ -49,6 +57,14 @@ func usageCmd(cmd string) {
 		fmt.Fprintln(os.Stderr, "   Usage: qemu-disk resize --name <file> --size <size>")
 	case "convert":
 		fmt.Fprintln(os.Stderr, "   Usage: qemu-disk convert --src <file> --dst <file> --fmt <format>")
+	case "snapshot list":
+		fmt.Fprintln(os.Stderr, "   Usage: qemu-disk snapshot list --name <file>")
+	case "snapshot create":
+		fmt.Fprintln(os.Stderr, "   Usage: qemu-disk snapshot create --name <file> --snap <name>")
+	case "snapshot delete":
+		fmt.Fprintln(os.Stderr, "   Usage: qemu-disk snapshot delete --name <file> --snap <name>")
+	case "snapshot apply":
+		fmt.Fprintln(os.Stderr, "   Usage: qemu-disk snapshot apply --name <file> --snap <name>")
 	}
 }
 
@@ -253,6 +269,66 @@ func cmdConvert(f flags) {
 	fmt.Println("✅ Done.")
 }
 
+
+// =============================================================
+//  SNAPSHOT COMMANDS
+// =============================================================
+
+func cmdSnapshot(sub string, f flags) {
+	fullCmd := "snapshot " + sub
+
+	name, err := f.require(fullCmd, "name")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
+	}
+	if err := requireFile(name); err != nil {
+		fmt.Fprintln(os.Stderr, "❌", err)
+		os.Exit(1)
+	}
+
+	switch sub {
+	case "list":
+		fmt.Printf("Snapshots in %s:\n", name)
+		run("snapshot", "-l", name)
+
+	case "create":
+		snap, err := f.require(fullCmd, "snap")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "❌", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Creating snapshot %q in %s…\n", snap, name)
+		run("snapshot", "-c", snap, name)
+		fmt.Println("✅ Done.")
+
+	case "delete":
+		snap, err := f.require(fullCmd, "snap")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "❌", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Deleting snapshot %q from %s…\n", snap, name)
+		run("snapshot", "-d", snap, name)
+		fmt.Println("✅ Done.")
+
+	case "apply":
+		snap, err := f.require(fullCmd, "snap")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "❌", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Applying snapshot %q to %s…\n", snap, name)
+		run("snapshot", "-a", snap, name)
+		fmt.Println("✅ Done.")
+
+	default:
+		fmt.Fprintf(os.Stderr, "❌ Unknown snapshot subcommand: %q\n", sub)
+		fmt.Fprintln(os.Stderr, "   Known: list, create, delete, apply")
+		os.Exit(1)
+	}
+}
+
 // =============================================================
 //  MAIN
 // =============================================================
@@ -274,6 +350,14 @@ func main() {
 		cmdResize(f)
 	case "convert":
 		cmdConvert(f)
+	case "snapshot":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "❌ snapshot requires a subcommand: list, create, delete, apply")
+			os.Exit(1)
+		}
+		sub := os.Args[2]
+		f = parseFlags(os.Args[3:])
+		cmdSnapshot(sub, f)
 	case "--help", "-h", "help":
 		fmt.Print(usageText)
 	default:
