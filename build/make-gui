@@ -7,6 +7,9 @@
 #    ./build/make-gui              one-dir  (default)
 #    ./build/make-gui --onefile    single portable binary
 #
+#  Creates a temporary .venv in the project root, installs
+#  PyInstaller + PyQt6, builds the GUI, then removes .venv.
+#
 #  one-dir output:
 #    virt-forge        ← executable
 #    _internal/        ← PyQt6 + libs (must stay beside binary)
@@ -19,6 +22,7 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
 GUI_SRC="$ROOT/gui/virt-forge.py"
+VENV="$ROOT/.venv"
 
 # ── Parse arguments ───────────────────────────────────────────
 MODE="onedir"
@@ -43,23 +47,60 @@ for arg in "$@"; do
     esac
 done
 
-# ── Preflight checks ──────────────────────────────────────────
-if ! python3 -m PyInstaller --version > /dev/null 2>&1; then
-    printf '❌ PyInstaller not found.\n'
-    printf '   Install with: pip install pyinstaller\n'
+# ── Detect python3 or python ──────────────────────────────────
+PYTHON_BIN=""
+for candidate in python3 python; do
+    if command -v "$candidate" > /dev/null 2>&1; then
+        # Must be Python 3.x
+        ver="$("$candidate" -c 'import sys; print(sys.version_info.major)' 2>/dev/null || echo 0)"
+        if [ "$ver" = "3" ]; then
+            PYTHON_BIN="$candidate"
+            break
+        fi
+    fi
+done
+
+if [ -z "$PYTHON_BIN" ]; then
+    printf '❌ Python 3 not found in PATH.\n'
+    printf '   Install with: sudo apt install python3\n'
     exit 1
 fi
+printf 'ℹ  Python: %s (%s)\n' "$PYTHON_BIN" "$("$PYTHON_BIN" --version 2>&1)"
 
-if ! python3 -c "import PyQt6" > /dev/null 2>&1; then
-    printf '❌ PyQt6 not found.\n'
-    printf '   Install with: pip install PyQt6\n'
+# ── Check venv module availability ────────────────────────────
+if ! "$PYTHON_BIN" -m venv --help > /dev/null 2>&1; then
+    printf '❌ Python venv module not found.\n'
+    printf '   Install with: sudo apt install python3-venv\n'
     exit 1
 fi
+printf 'ℹ  venv module: ok\n'
 
+# ── Source file check ─────────────────────────────────────────
 if [ ! -f "$GUI_SRC" ]; then
     printf '❌ Source not found: %s\n' "$GUI_SRC"
     exit 1
 fi
+
+# ── Cleanup on exit ───────────────────────────────────────────
+cleanup() {
+    if [ -d "$VENV" ]; then
+        printf '🧹 Removing temporary .venv...\n'
+        rm -rf "$VENV"
+    fi
+}
+trap cleanup EXIT
+
+# ── Create venv ───────────────────────────────────────────────
+printf '🐍 Creating temporary .venv...\n'
+"$PYTHON_BIN" -m venv "$VENV"
+
+PYTHON="$VENV/bin/python3"
+PIP="$VENV/bin/pip"
+
+# ── Install dependencies ──────────────────────────────────────
+printf '📦 Installing PyInstaller and PyQt6...\n'
+"$PIP" install --quiet --upgrade pip
+"$PIP" install --quiet pyinstaller PyQt6
 
 # ── Build ─────────────────────────────────────────────────────
 printf '🔨 Building GUI (PyInstaller %s)...\n' "$MODE"
@@ -67,7 +108,7 @@ printf '🔨 Building GUI (PyInstaller %s)...\n' "$MODE"
 WORK_DIR="$SCRIPT_DIR/gui-work"
 DIST_DIR="$SCRIPT_DIR/gui-dist"
 
-python3 -m PyInstaller \
+"$PYTHON" -m PyInstaller \
     "--$MODE" \
     --name "virt-forge" \
     --distpath "$DIST_DIR" \
@@ -83,12 +124,8 @@ rm -f  "$ROOT/virt-forge"
 rm -rf "$ROOT/_internal"
 
 if [ "$MODE" = "onefile" ]; then
-    # onefile layout: gui-dist/virt-forge  (single binary)
     mv "$DIST_DIR/virt-forge" "$ROOT/virt-forge"
 else
-    # onedir layout:
-    #   gui-dist/virt-forge/virt-forge   ← executable
-    #   gui-dist/virt-forge/_internal/   ← required libs
     mv "$DIST_DIR/virt-forge/virt-forge"  "$ROOT/virt-forge"
     mv "$DIST_DIR/virt-forge/_internal"   "$ROOT/_internal"
 fi
@@ -96,7 +133,7 @@ fi
 # ── Cleanup PyInstaller temp dirs ─────────────────────────────
 rm -rf "$WORK_DIR" "$DIST_DIR"
 
-# ── Done ──────────────────────────────────────────────────────
+# ── Done (trap will remove .venv) ─────────────────────────────
 printf '✅ GUI built (%s):\n' "$MODE"
 if [ "$MODE" = "onefile" ]; then
     printf '     virt-forge   ← single portable binary\n\n'
