@@ -34,8 +34,8 @@ virt-forge/
 │   └── *.qcow2              # disk images live here
 │
 ├── build/
-│   ├── make                 # Build script (Go + GUI)
-│   └── make-gui             # GUI-only build (PyInstaller)
+│   ├── make                 # Main build script (Go + GUI)
+│   └── make-gui             # GUI-only build script (PyInstaller)
 │
 ├── gui/
 │   └── virt-forge.py        # PyQt6 GUI source
@@ -45,25 +45,46 @@ virt-forge/
 │   ├── install-desktop.sh   # Desktop menu entry installer
 │   └── virt-forge.png       # App icon (512×512)
 │
+├── Makefile                 # Convenience targets (wraps build/ and installer/)
 ├── _internal/               # GUI runtime libs — must stay beside the binary
 ├── virt-forge               # GUI executable
 └── README.md
 ```
 
-> **Note:** `_internal/` must always remain in the same directory as the
-> `virt-forge` binary. Moving or deleting it will prevent the GUI from launching.
+> **Note:** `_internal/` is only present in one-dir builds. It must always
+> remain in the same directory as the `virt-forge` binary. In one-file builds
+> it is not needed — everything is bundled into the single binary.
+
+---
+
+## Quick Start
+
+```sh
+# 1. Install QEMU system packages
+make install-deps
+
+# 2. Build everything
+make
+
+# 3. Run
+./virt-forge
+```
 
 ---
 
 ## Step 1 — Install System Dependencies
 
 ```sh
+# Via Makefile
+make install-deps
+
+# Or directly
 sudo ./installer/install-deps.sh
 ```
 
 Installs `qemu-system-x86_64`, `qemu-system-aarch64`, and `qemu-utils`.
-Automatically adds the current user to the `kvm` group if `/dev/kvm` is present
-(re-login required).
+Automatically adds the current user to the `kvm` group if `/dev/kvm` is
+present (re-login required).
 
 **Supported package managers:**
 
@@ -91,40 +112,65 @@ Automatically adds the current user to the `kvm` group if `/dev/kvm` is present
 | `PyInstaller` | `pip install pyinstaller` |
 | `PyQt6` | `pip install PyQt6` |
 
+### Using Make (recommended)
+
 ```sh
-# Build everything
-./build/make
+make              # Build all — Go binaries + GUI (one-dir, default)
+make onefile      # Build all — Go binaries + GUI (single portable binary)
+make gui          # GUI only (one-dir)
+make gui-onefile  # GUI only (single portable binary)
+make qemu-run     # VM launcher binary only
+make qemu-ctl     # Control binary only
+make qemu-disk    # Disk manager binary only
+make clean        # Remove all build output
+make help         # Show all available targets
+```
 
-# Build individual components
-./build/make qemu-run
-./build/make qemu-ctl
-./build/make qemu-disk
-./build/make gui
+### Using the build script directly
 
-# Remove build output (disk images are preserved)
+```sh
+./build/make              # same as make
+./build/make gui --onefile
 ./build/make clean
 ```
 
-After a successful build:
+### One-dir vs One-file
+
+| Mode | Output | Notes |
+|---|---|---|
+| `onedir` (default) | `virt-forge` + `_internal/` | Faster startup; `_internal/` must stay beside the binary |
+| `onefile` | `virt-forge` only | Single portable binary; slightly slower first launch |
+
+After a successful one-dir build:
 
 ```
 virt-forge        ← run this
 _internal/        ← keep this alongside the binary
 ```
 
+After a successful one-file build:
+
+```
+virt-forge        ← single self-contained binary, copy anywhere
+```
+
 ---
 
 ## Step 3 — Desktop Entry (Optional)
 
+Add Virt-Forge to your application menu:
+
 ```sh
-# User-level (no sudo)
-./installer/install-desktop.sh
+# Via Makefile
+make install-desktop        # user-level (no sudo)
+make install-desktop-sys    # system-wide (sudo)
+make remove-desktop         # remove user-level entry
+make remove-desktop-sys     # remove system-wide entry
 
-# System-wide
-sudo ./installer/install-desktop.sh
-
-# Remove
-./installer/install-desktop.sh remove
+# Or directly
+./installer/install-desktop.sh           # install (user-level)
+sudo ./installer/install-desktop.sh      # install (system-wide)
+./installer/install-desktop.sh remove    # remove
 ```
 
 ---
@@ -135,13 +181,12 @@ sudo ./installer/install-desktop.sh
 ./virt-forge
 ```
 
-Or launch **Virt-Forge** from your application menu if the desktop entry is installed.
+Or launch **Virt-Forge** from your application menu if the desktop entry is
+installed. Click **❓ Help** in the VM Launcher tab for a full in-app guide.
 
 ---
 
 ### VM Launcher Tab
-
-Configure and start a VM. Click **❓ Help** inside the tab for a full in-app guide.
 
 | Field | Description |
 |---|---|
@@ -162,13 +207,8 @@ Configure and start a VM. Click **❓ Help** inside the tab for a full in-app gu
 #### Connecting to a Running VM
 
 ```sh
-# SSH
 ssh user@localhost -p 4444
-
-# VNC
 vncviewer 127.0.0.1:5909
-
-# SPICE
 remote-viewer spice://localhost:5910
 ```
 
@@ -201,8 +241,7 @@ Auto-refreshes every 5 seconds.
 | ⏪ Apply Snapshot | Restore the disk to a saved snapshot |
 | 🗑 Delete Snapshot | Remove a snapshot from the image |
 
-> It is recommended to shut down the VM before creating a snapshot to ensure
-> a consistent disk state.
+> Shut down the VM before creating a snapshot to ensure a consistent disk state.
 
 ---
 
@@ -248,7 +287,7 @@ telnet localhost 4445
 
 - Both machines should run the same QEMU version and the same acceleration
   mode (KVM or TCG).
-- Open port `5555` (or your chosen port) in the firewall on System B.
+- Open the migration port (e.g. `5555`) in the firewall on System B.
 - After migration completes, reconnect your VNC/SPICE client to System B.
 
 ---
@@ -258,7 +297,6 @@ telnet localhost 4445
 Snapshots are stored inside the QCOW2 file — no extra files needed.
 
 ```sh
-# CLI
 ./bin/qemu-disk snapshot list    --name bin/debian.qcow2
 ./bin/qemu-disk snapshot create  --name bin/debian.qcow2 --snap before-upgrade
 ./bin/qemu-disk snapshot apply   --name bin/debian.qcow2 --snap before-upgrade
@@ -321,23 +359,12 @@ Live Migration:
 **Examples:**
 
 ```sh
-# Quick launch
 qemu-run --disk bin/alpine.qcow2
-
-# Custom resources, VNC port
 qemu-run --disk bin/debian.qcow2 --ram 8192 --cpu 4 --vnc 5901 --fg
-
-# SPICE with extra port forward
 qemu-run --disk bin/alpine.qcow2 --spice 5910 --spice-pass hunter2 \
          --extra-fwds 8080:8080
-
-# Boot into snapshot
 qemu-run --disk bin/debian.qcow2 --snapshot before-upgrade
-
-# Live migration — send
 qemu-run --disk bin/debian.qcow2 --migrate 192.168.1.50:5555
-
-# Live migration — receive
 qemu-run --disk bin/debian.qcow2 --incoming tcp:0:5555
 ```
 
@@ -394,14 +421,9 @@ Running VMs create lock files in `~/.virt-forge-locks/`:
 ## KVM Hardware Acceleration
 
 ```sh
-# Check availability
-ls /dev/kvm
-
-# Check group membership
-groups $USER
-
-# Add yourself to the kvm group (re-login required)
-sudo usermod -aG kvm $USER
+ls /dev/kvm               # check availability
+groups $USER              # check group membership
+sudo usermod -aG kvm $USER   # add yourself (re-login required)
 ```
 
 Without KVM, QEMU falls back to TCG (software emulation) — functional but slower.
@@ -427,7 +449,8 @@ VIRT_FORGE_BIN=/custom/bin ./virt-forge
 | VM Launcher / CTL / Disk | `qemu-system-x86_64` `qemu-system-aarch64` `qemu-utils` |
 | Build — Go | `go` 1.21+ |
 | Build — GUI | `python3` · `PyInstaller` · `PyQt6` |
-| GUI Runtime | `_internal/` (bundled — no separate install needed) |
+| GUI Runtime (one-dir) | `_internal/` (bundled — no separate install needed) |
+| GUI Runtime (one-file) | none — fully self-contained |
 
 ---
 

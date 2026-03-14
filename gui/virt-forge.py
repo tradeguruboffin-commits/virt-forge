@@ -23,8 +23,20 @@ from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 
 # ── Paths ─────────────────────────────────────────────────────
+# PyInstaller onefile: sys.frozen=True, sys.executable = the real binary.
+#   __file__ points into a temp _MEIxxxxxx dir — useless for locating bin/.
+# PyInstaller onedir:  sys.frozen=True, sys.executable is inside _internal/;
+#   its parent is the project root (where bin/ lives).
+# Plain script:        __file__ = gui/virt-forge.py → parent.parent = root.
 _env_root = os.environ.get("VIRT_FORGE_ROOT")
-ROOT    = Path(_env_root).resolve() if _env_root else Path(__file__).resolve().parent.parent
+if _env_root:
+    ROOT = Path(_env_root).resolve()
+elif getattr(sys, "frozen", False):
+    # onefile and onedir both: real executable is placed at project root
+    ROOT = Path(sys.executable).resolve().parent
+else:
+    ROOT = Path(__file__).resolve().parent.parent
+
 BIN_DIR = Path(os.environ.get("VIRT_FORGE_BIN", str(ROOT / "bin"))).resolve()
 
 PROFILES_DIR = Path.home() / ".vm_profiles"

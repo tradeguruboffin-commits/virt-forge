@@ -1,8 +1,11 @@
 #!/bin/sh
 # =============================================================
 #  virt-forge — build script
-#  Usage: ./build/make [target]
+#  Usage: ./build/make [target] [--onefile]
 #  Targets: all (default), qemu-run, qemu-ctl, qemu-disk, gui, clean
+#
+#  --onefile   Build GUI as a single portable binary
+#              (only applies to "all" and "gui" targets)
 # =============================================================
 set -eu
 
@@ -11,6 +14,48 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
 ASSETS="$ROOT/assets"
 BIN="$ROOT/bin"
+
+# ── Parse arguments ───────────────────────────────────────────
+TARGET=""
+GUI_MODE=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --onefile) GUI_MODE="--onefile" ;;
+        --onedir)  GUI_MODE="--onedir"  ;;
+        --help|-h)
+            printf 'Usage: %s [target] [--onedir|--onefile]\n' "$0"
+            printf '\n'
+            printf 'Targets:\n'
+            printf '  all        Build all Go binaries + GUI (default)\n'
+            printf '  qemu-run   Build VM launcher binary only\n'
+            printf '  qemu-ctl   Build control binary only\n'
+            printf '  qemu-disk  Build disk manager binary only\n'
+            printf '  gui        Build GUI only\n'
+            printf '  clean      Remove all build output\n'
+            printf '\n'
+            printf 'Options:\n'
+            printf '  --onedir    GUI: one-dir build, _internal/ beside binary (default)\n'
+            printf '  --onefile   GUI: single portable binary, no _internal/ needed\n'
+            exit 0
+            ;;
+        -*)
+            printf '❌ Unknown option: %s\n' "$arg"
+            printf '   Run with --help for usage.\n'
+            exit 1
+            ;;
+        *)
+            if [ -z "$TARGET" ]; then
+                TARGET="$arg"
+            else
+                printf '❌ Unexpected argument: %s\n' "$arg"
+                exit 1
+            fi
+            ;;
+    esac
+done
+
+TARGET="${TARGET:-all}"
 
 # ── Helpers ───────────────────────────────────────────────────
 build_go() {
@@ -25,7 +70,11 @@ build_go() {
 }
 
 build_gui() {
-    sh "$SCRIPT_DIR/make-gui"
+    if [ -n "$GUI_MODE" ]; then
+        sh "$SCRIPT_DIR/make-gui" "$GUI_MODE"
+    else
+        sh "$SCRIPT_DIR/make-gui"
+    fi
 }
 
 clean() {
@@ -45,9 +94,7 @@ sync_go_deps() {
 # ── Ensure bin/ exists ────────────────────────────────────────
 mkdir -p "$BIN"
 
-# ── Dispatch ─────────────────────────────────────────────────
-TARGET="${1:-all}"
-
+# ── Dispatch ──────────────────────────────────────────────────
 case "$TARGET" in
     all)
         sync_go_deps
@@ -76,7 +123,8 @@ case "$TARGET" in
         clean
         ;;
     *)
-        printf 'Usage: %s [all|qemu-run|qemu-ctl|qemu-disk|gui|clean]\n' "$0"
+        printf '❌ Unknown target: %s\n' "$TARGET"
+        printf '   Run with --help for usage.\n'
         exit 1
         ;;
 esac

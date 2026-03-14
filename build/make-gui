@@ -1,16 +1,47 @@
 #!/bin/sh
 # =============================================================
-#  virt-forge — GUI build script (PyInstaller one-dir)
+#  virt-forge — GUI build script (PyInstaller)
 #  Called by: ./build/make gui
-#  Output:    bin/virt-forge        ← executable
-#             bin/_internal/        ← PyQt6 + libs (must stay beside binary)
+#
+#  Modes:
+#    ./build/make-gui              one-dir  (default)
+#    ./build/make-gui --onefile    single portable binary
+#
+#  one-dir output:
+#    virt-forge        ← executable
+#    _internal/        ← PyQt6 + libs (must stay beside binary)
+#
+#  onefile output:
+#    virt-forge        ← single self-contained binary
 # =============================================================
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
-BIN="$ROOT/bin"
 GUI_SRC="$ROOT/gui/virt-forge.py"
+
+# ── Parse arguments ───────────────────────────────────────────
+MODE="onedir"
+for arg in "$@"; do
+    case "$arg" in
+        --onefile) MODE="onefile" ;;
+        --onedir)  MODE="onedir"  ;;
+        --help|-h)
+            printf 'Usage: %s [--onedir|--onefile]\n' "$0"
+            printf '\n'
+            printf '  --onedir    One-dir build (default) — faster startup,\n'
+            printf '              _internal/ must stay beside the binary.\n'
+            printf '  --onefile   Single portable binary — slower startup,\n'
+            printf '              no _internal/ needed, easier to distribute.\n'
+            exit 0
+            ;;
+        *)
+            printf '❌ Unknown argument: %s\n' "$arg"
+            printf '   Run with --help for usage.\n'
+            exit 1
+            ;;
+    esac
+done
 
 # ── Preflight checks ──────────────────────────────────────────
 if ! python3 -m PyInstaller --version > /dev/null 2>&1; then
@@ -30,16 +61,14 @@ if [ ! -f "$GUI_SRC" ]; then
     exit 1
 fi
 
-
-
 # ── Build ─────────────────────────────────────────────────────
-printf '🔨 Building GUI (PyInstaller one-dir)...\n'
+printf '🔨 Building GUI (PyInstaller %s)...\n' "$MODE"
 
 WORK_DIR="$SCRIPT_DIR/gui-work"
 DIST_DIR="$SCRIPT_DIR/gui-dist"
 
 python3 -m PyInstaller \
-    --onedir \
+    "--$MODE" \
     --name "virt-forge" \
     --distpath "$DIST_DIR" \
     --workpath "$WORK_DIR" \
@@ -49,23 +78,29 @@ python3 -m PyInstaller \
     --windowed \
     "$GUI_SRC"
 
-# ── Move output to bin/ ───────────────────────────────────────
-# PyInstaller one-dir layout:
-#   gui-dist/virt-forge/virt-forge   ← main executable
-#   gui-dist/virt-forge/_internal/   ← required libs (must travel with binary)
-#
-# We flatten both into bin/ so the final layout is:
-#   bin/virt-forge      ← executable
-#   bin/_internal/      ← libs beside the binary
-#
+# ── Move output to project root ───────────────────────────────
 rm -f  "$ROOT/virt-forge"
 rm -rf "$ROOT/_internal"
-mv "$DIST_DIR/virt-forge/virt-forge"  "$ROOT/virt-forge"
-mv "$DIST_DIR/virt-forge/_internal"   "$ROOT/_internal"
 
-# ── Cleanup PyInstaller temp dirs ────────────────────────────
+if [ "$MODE" = "onefile" ]; then
+    # onefile layout: gui-dist/virt-forge  (single binary)
+    mv "$DIST_DIR/virt-forge" "$ROOT/virt-forge"
+else
+    # onedir layout:
+    #   gui-dist/virt-forge/virt-forge   ← executable
+    #   gui-dist/virt-forge/_internal/   ← required libs
+    mv "$DIST_DIR/virt-forge/virt-forge"  "$ROOT/virt-forge"
+    mv "$DIST_DIR/virt-forge/_internal"   "$ROOT/_internal"
+fi
+
+# ── Cleanup PyInstaller temp dirs ─────────────────────────────
 rm -rf "$WORK_DIR" "$DIST_DIR"
 
-printf '✅ GUI built:\n'
-printf '     virt-forge   ← run this\n'
-printf '     _internal/   ← keep beside the binary\n\n'
+# ── Done ──────────────────────────────────────────────────────
+printf '✅ GUI built (%s):\n' "$MODE"
+if [ "$MODE" = "onefile" ]; then
+    printf '     virt-forge   ← single portable binary\n\n'
+else
+    printf '     virt-forge   ← run this\n'
+    printf '     _internal/   ← keep beside the binary\n\n'
+fi
