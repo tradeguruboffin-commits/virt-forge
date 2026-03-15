@@ -62,7 +62,12 @@ done
 
 if [ -z "$PYTHON_BIN" ]; then
     printf '❌ Python 3 not found in PATH.\n'
-    printf '   Install with: sudo apt install python3\n'
+    printf '   Install using your package manager:\n'
+    printf '     apt:     sudo apt install python3\n'
+    printf '     dnf:     sudo dnf install python3\n'
+    printf '     pacman:  sudo pacman -S python\n'
+    printf '     apk:     sudo apk add python3\n'
+    printf '   Or run:  sudo ./installer/install-deps.sh build-deps\n'
     exit 1
 fi
 printf 'ℹ  Python: %s (%s)\n' "$PYTHON_BIN" "$("$PYTHON_BIN" --version 2>&1)"
@@ -70,7 +75,12 @@ printf 'ℹ  Python: %s (%s)\n' "$PYTHON_BIN" "$("$PYTHON_BIN" --version 2>&1)"
 # ── Check venv module availability ────────────────────────────
 if ! "$PYTHON_BIN" -m venv --help > /dev/null 2>&1; then
     printf '❌ Python venv module not found.\n'
-    printf '   Install with: sudo apt install python3-venv\n'
+    printf '   Install using your package manager:\n'
+    printf '     apt:     sudo apt install python3-venv\n'
+    printf '     dnf:     sudo dnf install python3-virtualenv\n'
+    printf '     pacman:  sudo pacman -S python-virtualenv\n'
+    printf '     apk:     sudo apk add py3-virtualenv\n'
+    printf '   Or run:  sudo ./installer/install-deps.sh build-deps\n'
     exit 1
 fi
 printf 'ℹ  venv module: ok\n'

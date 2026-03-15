@@ -88,6 +88,7 @@ clean() {
 
 # ── Go: clean cache, reset module, tidy, then build ───────────
 init_go() {
+    check_go
     printf '🧹 Cleaning Go cache...\n'
     go clean -cache -modcache 2>/dev/null || true
 
@@ -106,6 +107,21 @@ init_go() {
     ( cd "$ASSETS" && go mod tidy )
 
     printf '✅ Go module initialised\n\n'
+}
+
+# ── Check go availability ────────────────────────────────────
+check_go() {
+    if ! command -v go > /dev/null 2>&1; then
+        printf '❌ Go not found in PATH.\n'
+        printf '   Install using your package manager:\n'
+        printf '     apt:     sudo apt install golang-go\n'
+        printf '     dnf:     sudo dnf install golang\n'
+        printf '     pacman:  sudo pacman -S go\n'
+        printf '     apk:     sudo apk add go\n'
+        printf '   Or run:  sudo ./installer/install-deps.sh build-deps\n'
+        exit 1
+    fi
+    printf 'ℹ  Go: %s\n' "$(go version)"
 }
 
 # ── Ensure bin/ exists ────────────────────────────────────────

@@ -60,7 +60,7 @@ virt-forge/
 ## Quick Start
 
 ```sh
-# 1. Install QEMU system packages
+# 1. Install QEMU + Python build tools
 make install-deps
 
 # 2. Build everything
@@ -72,19 +72,29 @@ make
 
 ---
 
-## Step 1 — Install System Dependencies
+## Step 1 — Install Dependencies
+
+`install-deps.sh` handles two separate dependency groups:
+
+| Target | What it installs |
+|---|---|
+| `engine-deps` | `qemu-system-x86_64`, `qemu-system-aarch64`, `qemu-utils` |
+| `build-deps` | `python3`, `python3-venv`, `go` |
 
 ```sh
 # Via Makefile
-make install-deps
+make install-deps            # install both (default)
+make install-engine-deps     # QEMU packages only
+make install-build-deps      # python3 + python3-venv + go only
 
 # Or directly
-sudo ./installer/install-deps.sh
+sudo ./installer/install-deps.sh               # both
+sudo ./installer/install-deps.sh engine-deps   # QEMU only
+sudo ./installer/install-deps.sh build-deps    # Python + Go only
 ```
 
-Installs `qemu-system-x86_64`, `qemu-system-aarch64`, and `qemu-utils`.
-Automatically adds the current user to the `kvm` group if `/dev/kvm` is
-present (re-login required).
+`engine-deps` automatically adds the current user to the `kvm` group if
+`/dev/kvm` is present (re-login required).
 
 **Supported package managers:**
 
@@ -108,9 +118,11 @@ present (re-login required).
 | Tool | Purpose |
 |---|---|
 | `go` 1.21+ | Build Go binaries |
-| `python3` + `pip` | Build the GUI |
-| `PyInstaller` | `pip install pyinstaller` |
-| `PyQt6` | `pip install PyQt6` |
+| `python3` + `python3-venv` | Build the GUI (auto-venv handles PyInstaller + PyQt6) |
+
+The GUI build script automatically creates a temporary `.venv` in the project
+root, installs `PyInstaller` and `PyQt6` inside it, builds the binary, then
+removes the `.venv` when done. No manual pip install needed.
 
 ### Using Make (recommended)
 
@@ -162,10 +174,10 @@ Add Virt-Forge to your application menu:
 
 ```sh
 # Via Makefile
-make install-desktop        # user-level (no sudo)
-make install-desktop-sys    # system-wide (sudo)
-make remove-desktop         # remove user-level entry
-make remove-desktop-sys     # remove system-wide entry
+make install-desktop         # user-level (no sudo)
+make install-desktop-sys     # system-wide (sudo)
+make remove-desktop          # remove user-level entry
+make remove-desktop-sys      # remove system-wide entry
 
 # Or directly
 ./installer/install-desktop.sh           # install (user-level)
@@ -421,9 +433,9 @@ Running VMs create lock files in `~/.virt-forge-locks/`:
 ## KVM Hardware Acceleration
 
 ```sh
-ls /dev/kvm               # check availability
-groups $USER              # check group membership
-sudo usermod -aG kvm $USER   # add yourself (re-login required)
+ls /dev/kvm                    # check availability
+groups $USER                   # check group membership
+sudo usermod -aG kvm $USER     # add yourself (re-login required)
 ```
 
 Without KVM, QEMU falls back to TCG (software emulation) — functional but slower.
@@ -448,7 +460,7 @@ VIRT_FORGE_BIN=/custom/bin ./virt-forge
 |---|---|
 | VM Launcher / CTL / Disk | `qemu-system-x86_64` `qemu-system-aarch64` `qemu-utils` |
 | Build — Go | `go` 1.21+ |
-| Build — GUI | `python3` · `PyInstaller` · `PyQt6` |
+| Build — GUI | `python3` · `python3-venv` (PyInstaller + PyQt6 auto-installed in temp venv) |
 | GUI Runtime (one-dir) | `_internal/` (bundled — no separate install needed) |
 | GUI Runtime (one-file) | none — fully self-contained |
 
