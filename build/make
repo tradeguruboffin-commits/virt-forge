@@ -86,9 +86,26 @@ clean() {
     printf '✅ Done\n'
 }
 
-# ── Sync Go dependencies ───────────────────────────────────────
-sync_go_deps() {
+# ── Go: clean cache, reset module, tidy, then build ───────────
+init_go() {
+    printf '🧹 Cleaning Go cache...\n'
+    go clean -cache -modcache 2>/dev/null || true
+
+    printf '🗑  Removing old go.mod and go.sum...\n'
+    rm -f "$ASSETS/go.mod" "$ASSETS/go.sum"
+
+    # Detect module name from existing go.mod if possible,
+    # otherwise use a safe default.
+    MODULE="github.com/dev-boffin-io/virt-forge"
+    printf 'ℹ  Module: %s\n' "$MODULE"
+
+    printf '🔧 Running go mod init...\n'
+    ( cd "$ASSETS" && go mod init "$MODULE" )
+
+    printf '🔧 Running go mod tidy...\n'
     ( cd "$ASSETS" && go mod tidy )
+
+    printf '✅ Go module initialised\n\n'
 }
 
 # ── Ensure bin/ exists ────────────────────────────────────────
@@ -97,7 +114,7 @@ mkdir -p "$BIN"
 # ── Dispatch ──────────────────────────────────────────────────
 case "$TARGET" in
     all)
-        sync_go_deps
+        init_go
         build_go qemu-run      main.go
         build_go qemu-ctl  qemu-ctl.go
         build_go qemu-disk qemu-disk.go
@@ -105,15 +122,15 @@ case "$TARGET" in
         printf '🎉 All binaries built in bin/\n'
         ;;
     qemu-run)
-        sync_go_deps
+        init_go
         build_go qemu-run main.go
         ;;
     qemu-ctl)
-        sync_go_deps
+        init_go
         build_go qemu-ctl qemu-ctl.go
         ;;
     qemu-disk)
-        sync_go_deps
+        init_go
         build_go qemu-disk qemu-disk.go
         ;;
     gui)

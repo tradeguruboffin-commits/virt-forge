@@ -1,3 +1,3 @@
-module virt-forge
+module github.com/dev-boffin-io/virt-forge
 
-go 1.21
+go 1.24.4
